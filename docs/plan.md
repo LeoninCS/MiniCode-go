@@ -21,6 +21,8 @@ Day 11～Day 12 交互增强版：SSE 流式输出 + 工具参数分片
 Day 13～Day 14 长任务版：上下文压缩与合法切分
 ```
 
+> 当前已完成：Day 0（规划）、Day 1（协议结构体 + 单次非流式模型调用）。
+
 ---
 
 ## Day 0：项目规划 ✅
@@ -47,7 +49,7 @@ Day 13～Day 14 长任务版：上下文压缩与合法切分
 
 ---
 
-## Day 1：协议结构体 + 单次非流式模型调用 ⬜
+## Day 1：协议结构体 + 单次非流式模型调用 ✅
 
 ### 目标
 
@@ -55,18 +57,22 @@ Day 13～Day 14 长任务版：上下文压缩与合法切分
 
 ### 内容
 
-- 定义请求结构体；
-- 定义响应结构体；
-- 定义消息、错误和响应内容结构；
-- 实现 HTTP 请求；
-- 处理鉴权和基础错误；
-- 完成一次用户输入到模型文本输出的调用。
+- ✅ 定义请求结构体（`ChatRequest` / `Message` / `Role`）；
+- ✅ 定义响应结构体（`ChatResponse` / `Choice` / `Usage`）；
+- ✅ 定义消息、错误和响应内容结构（`APIError` + `Error()` 实现）；
+- ✅ 实现 HTTP 请求（`internal/provider/openai.go` 内的 `Client.Chat`）；
+- ✅ 处理鉴权（`Authorization: Bearer`）和基础错误（APIError + 通用 http 错误）；
+- ✅ 完成一次用户输入到模型文本输出的调用（`cmd/minicode/main.go`）；
+- ✅ 兼容 OpenAI 风格的嵌套错误格式 `{"error": {...}}` 与平铺格式；
+- ✅ 入口支持 flag 与 `MINICODE_API_KEY` / `MINICODE_BASE_URL` / `MINICODE_MODEL` 环境变量；
+- ✅ `httptest` 覆盖：成功、模型覆盖、API 错误、嵌套错误、非 JSON 错误、context 取消、入参校验、URL 斜杠归一。
 
 ### 产出
 
-- 可以发送一条文本请求；
-- 可以解析模型返回的文本；
-- API 错误能够被明确报告。
+- ✅ 可以发送一条文本请求；
+- ✅ 可以解析模型返回的文本（`ChatResponse.FirstContent`）；
+- ✅ API 错误能够被明确报告（`*APIError` 通过 `errors.As` 暴露）；
+- ✅ 入口二进制 `minicode` 已通过端到端 smoke test（happy path + 401 错误 + 网络错误 + 配置缺失）。
 
 ---
 
