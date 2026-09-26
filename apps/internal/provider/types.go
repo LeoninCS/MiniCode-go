@@ -1,7 +1,7 @@
 // Package provider 定义模型提供方共用的协议结构体。
 //
 // 当前覆盖单次非流式文本请求和 OpenAI 兼容的函数工具调用协议。
-// Agent Loop、工具执行、流式和 Provider 抽象层留到后续 Day 推进。
+// Agent Loop 和工具执行由调用方处理;流式和 Provider 抽象层留到后续推进。
 package provider
 
 import (

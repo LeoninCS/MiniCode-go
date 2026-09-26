@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const maxLogBodyBytes = 512
+
 // Config 是构造 Client 所需的最小配置。
 type Config struct {
 	// BaseURL 是模型服务的根地址,例如 https://api.openai.com/v1
@@ -137,9 +139,8 @@ func decodeAPIError(raw []byte) *APIError {
 }
 
 func truncateForLog(b []byte) string {
-	const max = 512
-	if len(b) <= max {
+	if len(b) <= maxLogBodyBytes {
 		return string(b)
 	}
-	return string(b[:max]) + "...(truncated)"
+	return string(b[:maxLogBodyBytes]) + "...(truncated)"
 }

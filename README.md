@@ -19,8 +19,8 @@ MiniCode-go 是一个使用 Go 从零实现的、以 CLI 为主要交互入口�
 - ✅ Day 0：项目定位、功能范围和开发计划；
 - ✅ Day 1：协议结构体 + 单次非流式模型调用；
 - ✅ Day 2：工具 Schema 定义 + 工具调用响应解析；
-- ⬜ Day 3：Agent Loop；
-- ⬜ Day 4：`bash`、`write_file` 和工具注册表；
+- ✅ Day 3：Agent Loop；
+- 🔄 Day 4：已接入 `bash`；`write_file` 和工具注册表待实现；
 - ⬜ Day 5：系统 Prompt + CLI 输入循环；
 - ⬜ Day 6：输出截断、轮数上限和执行前确认；
 - ⬜ Day 7：token 统计和过程可视化；
@@ -50,11 +50,13 @@ MiniCode-go/
 └── apps/                              # Go module: github.com/MiniCode-go/minicode
     ├── go.mod
     ├── cmd/minicode/main.go           # CLI 入口
+    ├── internal/tools/bash.go        # bash 命令执行、输出和取消
     ├── internal/provider/             # 模型协议结构体 + OpenAI 兼容客户端(纯源码)
     │   ├── types.go
     │   └── openai.go
     └── test/                          # 测试文件单独目录(black-box)
-        ├── cmd/minicode/main_test.go  # CLI 端到端 smoke
+        ├── cmd/minicode/main_test.go  # CLI 与 Agent Loop 端到端测试
+        ├── tools/bash_test.go         # bash 执行、输出和取消测试
         └── provider/
             ├── openai_test.go
             └── tool_calls_test.go
@@ -66,11 +68,11 @@ MiniCode-go/
   风格,只测导出 API,源码目录保持干净。
 - 构建/测试命令:`go -C apps build ./...` / `go -C apps test -count=1 ./...`。
 
-## 构建与运行（Day 2）
+## 构建与运行（Day 3）
 
 ```bash
 # 构建
-go -C apps build -o bin/minicode ./cmd/minicode
+go -C apps build -o ../bin/minicode ./cmd/minicode
 
 # 准备配置(任选一种)
 cp .env.example .env && $EDITOR .env && source .env   # 一次配置,反复使用
@@ -90,11 +92,23 @@ echo "用一句话介绍 Go 的 goroutine" | ./bin/minicode
 
 完整配置项与示例值见仓库根 [`.env.example`](.env.example)。`.env` 不进 git,放本地。
 
-Day 2 支持一次性非流式文本响应和结构化工具调用响应。模型请求工具时，CLI 会校验并展示所有调用，例如：
+CLI 支持普通文本回复和 bash 工具执行。模型请求工具时，会先打印调用信息，再执行命令、展示输出并把结果回传模型，继续请求直到得到最终回复，例如：
 
 ```text
 tool: bash
 arguments: {"command":"go test ./..."}
 ```
 
-当前只准备调用，不会执行命令；工具执行、Agent Loop 与流式输出将在后续 Day 推进。
+命令通过 `bash -c` 在启动 CLI 时的工作目录直接执行，标准输出和错误输出会合并显示。每次调用使用独立的非交互 shell，`cd` 不会影响下一次调用；当前工作目录不是文件系统沙箱。
+
+每项任务最多请求模型 10 次，`-timeout` 默认 60 秒，覆盖模型请求和命令执行。Ctrl+C 或超时会终止当前命令进程组；单次输出最多保留 64 KiB，并标记截断。命令失败的输出和错误也会回传模型。
+
+```bash
+# 从项目根目录运行（已有环境变量配置）
+go -C apps run ./cmd/minicode "请调用 bash 执行 date -u; date，然后说明两个时间的区别"
+
+# 只运行测试目录，避免显示源码包的 [no test files]
+go -C apps test -count=1 ./test/...
+```
+
+当前采用直接执行模式；交互确认、工具注册表和流式输出仍在后续计划中。

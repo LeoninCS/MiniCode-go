@@ -1,9 +1,7 @@
 // Command minicode 是 MiniCode-go 项目的 CLI 入口。
 //
-// 当前支持一次性的非流式请求:
-// 读取用户输入,向模型声明工具,再输出文本回复或结构化工具调用。
-// 工具执行、Agent Loop、交互式会话和流式输出等能力
-// 将在 Day 3～Day 12 逐步加入。
+// 读取用户任务,调用模型并执行 bash 工具,回传执行结果直到模型给出最终回复。
+// 当前使用非流式请求,交互式会话和流式输出将在后续加入。
 package main
 
 import (
@@ -20,12 +18,16 @@ import (
 	"time"
 
 	"github.com/MiniCode-go/minicode/internal/provider"
+	"github.com/MiniCode-go/minicode/internal/tools"
 )
 
 const (
 	envAPIKey  = "MINICODE_API_KEY"
 	envBaseURL = "MINICODE_BASE_URL"
 	envModel   = "MINICODE_MODEL"
+
+	toolNameBash = "bash"
+	maxTurns     = 10
 )
 
 func main() {
@@ -41,7 +43,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		apiKey  = fs.String("api-key", "", "模型服务 API Key(覆盖 MINICODE_API_KEY)")
 		baseURL = fs.String("base-url", "", "模型服务 Base URL,例如 https://api.openai.com/v1(覆盖 MINICODE_BASE_URL)")
 		model   = fs.String("model", "", "模型名(覆盖 MINICODE_MODEL)")
-		timeout = fs.Duration("timeout", 60*time.Second, "单次请求的超时时间")
+		timeout = fs.Duration("timeout", 60*time.Second, "整个任务的超时时间(含模型请求和命令执行)")
 	)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -79,44 +81,79 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Model:   modelVal,
 	})
 
-	resp, err := client.Chat(ctx, provider.ChatRequest{
-		Messages: []provider.Message{
-			provider.NewMessage(provider.RoleUser, prompt, ""),
-		},
-		Tools: availableTools(),
-	})
-	if err != nil {
-		fmt.Fprintln(stderr, "minicode: "+err.Error())
-		return 1
-	}
-
-	toolCalls, err := resp.ToolCalls()
-	if err != nil {
-		fmt.Fprintln(stderr, "minicode: invalid response from model: "+err.Error())
-		return 1
-	}
-	if len(toolCalls) > 0 {
-		for i, call := range toolCalls {
-			if i > 0 {
-				fmt.Fprintln(stdout)
-			}
+	messages := []provider.Message{provider.NewMessage(provider.RoleUser, prompt, "")}
+	toolDefinitions := availableTools()
+	for turn := 0; turn < maxTurns; turn++ {
+		resp, err := client.Chat(ctx, provider.ChatRequest{
+			Messages: messages,
+			Tools:    toolDefinitions,
+		})
+		if err != nil {
+			fmt.Fprintln(stderr, "minicode: "+err.Error())
+			return 1
+		}
+		toolCalls, err := resp.ToolCalls()
+		if err != nil {
+			fmt.Fprintln(stderr, "minicode: invalid response from model: "+err.Error())
+			return 1
+		}
+		content := resp.Content()
+		if content == "" && len(toolCalls) == 0 {
+			fmt.Fprintln(stderr, "minicode: empty response from model")
+			return 1
+		}
+		if content != "" {
+			fmt.Fprintln(stdout, content)
+		}
+		if len(toolCalls) == 0 {
+			return 0
+		}
+		// 留下完整 assistant 消息,后续工具结果通过调用 ID 与它对应。
+		messages = append(messages, resp.Choices[0].Message)
+		for _, call := range toolCalls {
 			fmt.Fprintln(stdout, "tool: "+call.Function.Name)
 			fmt.Fprintln(stdout, "arguments: "+call.Function.Arguments)
+			result, err := executeTool(ctx, call, stdout)
+			if result != "" && !strings.HasSuffix(result, "\n") {
+				fmt.Fprintln(stdout)
+			}
+			if ctx.Err() != nil {
+				fmt.Fprintln(stderr, "minicode: "+ctx.Err().Error())
+				return 1
+			}
+			if err != nil {
+				fmt.Fprintln(stderr, "minicode: "+err.Error())
+				result += "\nerror: " + err.Error()
+			}
+			messages = append(messages, provider.NewMessage(provider.RoleTool, result, call.ID))
 		}
-		return 0
 	}
+	fmt.Fprintf(stderr, "minicode: reached maximum model turns (%d)\n", maxTurns)
+	return 1
+}
 
-	content := resp.Content()
-	if content == "" {
-		fmt.Fprintln(stderr, "minicode: empty response from model")
-		return 1
+// executeTool 校验工具名称和参数,执行后返回模型需要的结果。
+func executeTool(ctx context.Context, call provider.ToolCall, stdout io.Writer) (string, error) {
+	switch call.Function.Name {
+	case toolNameBash:
+		var arguments map[string]any
+		if err := call.DecodeArguments(&arguments); err != nil {
+			return "", err
+		}
+		command, ok := arguments["command"].(string)
+		if !ok {
+			return "", errors.New("bash: command must be a string")
+		}
+		if len(arguments) != 1 {
+			return "", errors.New("bash: only the command parameter is supported")
+		}
+		return tools.RunBash(ctx, command, stdout)
+	default:
+		return "", fmt.Errorf("unknown tool %q", call.Function.Name)
 	}
-	fmt.Fprintln(stdout, content)
-	return 0
 }
 
 // availableTools 返回当前发送给模型的工具声明。
-// Day 2 只解析调用并展示参数,真正执行和注册工具将在后续完成。
 func availableTools() []provider.Tool {
 	bashTool := buildBashTool()
 	return []provider.Tool{bashTool}
@@ -138,7 +175,7 @@ func buildBashTool() provider.Tool {
 	bashTool := provider.Tool{
 		Type: provider.ToolTypeFunction,
 		Function: provider.FunctionDefinition{
-			Name:        "bash",
+			Name:        toolNameBash,
 			Description: "Run a shell command in the current workspace.",
 			Parameters:  bashParameters,
 		},

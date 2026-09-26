@@ -31,6 +31,8 @@ apps/                                # Go module 根(不是仓库根)
 ## 3. 编码风格
 
 - 中文 doc comment + 包注释
+- 固定配置常量统一放在文件顶部（import 之后），不在函数内部声明 const
+- 工具名称等业务标识使用命名常量，在声明和分发中复用，避免魔法值
 - 错误一律 `fmt.Errorf("context: %w", err)` 包装
 - `main` 不直接 `os.Exit`,由 `run(args, stdin, stdout, stderr) int` 返回退出码,便于测试
 - HTTP handler 阻塞 ctx 时用 `select { case <-ctx.Done(): case <-time.After(backup): }` 防 `srv.Close()` hang
@@ -65,7 +67,14 @@ apps/                                # Go module 根(不是仓库根)
 - **`strict` 默认不发送**：协议结构保留可选字段，但为兼容不同 OpenAI 风格服务不强制开启，宿主侧参数校验不能省略
 - **消息 content 可空**：`Message.Content` 使用 `*string` 且不设 `omitempty`，保留 assistant 工具调用的 `null`，空工具结果仍回传 `""`
 - **工具结果结构**：`role: tool` + `tool_call_id` + `content`，一个调用对应一条结果消息
-- **Day 2 不执行工具**：CLI 按计划声明并展示 `bash` 调用；进入 Day 4 前需统一 `bash{command}` 与 `spec.md` 中 `run_command{argv}` 的最终安全契约
+- **Day 2 范围**：最初仅声明并展示工具调用；后续按用户要求接入真实 bash 执行和最小 Agent Loop。
+
+### bash 执行与最小 Agent Loop
+
+- **保留现有协议**：使用 `bash{command}`，通过 `bash -c` 在启动 CLI 的工作目录执行，每次调用使用独立 shell。
+- **直接执行**：按用户当前要求展示并执行模型生成的命令，实时输出并把执行结果回传模型；本阶段不增加逐次确认交互，后续权限机制仍按 Day 6 推进。
+- **执行边界**：最多 10 次模型请求，沿用整项任务的 timeout；取消时终止命令进程组，单次命令输出最多保留 64 KiB。
+- **实现范围**：简单循环和 bash 执行函数，不提前引入工具注册表、交互会话和持久化。
 
 ## 6. 已知陷阱
 
