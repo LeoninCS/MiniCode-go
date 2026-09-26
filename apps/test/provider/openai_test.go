@@ -44,7 +44,7 @@ func TestClient_Chat_Success(t *testing.T) {
 		if req.Model != "test-model" {
 			t.Errorf("expected model test-model, got %s", req.Model)
 		}
-		if len(req.Messages) != 1 || req.Messages[0].Role != provider.RoleUser || req.Messages[0].Content != "hi" {
+		if len(req.Messages) != 1 || req.Messages[0].Role != provider.RoleUser || req.Messages[0].Text() != "hi" {
 			t.Errorf("unexpected messages: %+v", req.Messages)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -52,11 +52,8 @@ func TestClient_Chat_Success(t *testing.T) {
 			ID:    "chatcmpl-1",
 			Model: "test-model",
 			Choices: []provider.Choice{{
-				Index: 0,
-				Message: provider.Message{
-					Role:    provider.RoleAssistant,
-					Content: "hello back",
-				},
+				Index:        0,
+				Message:      provider.NewMessage(provider.RoleAssistant, "hello back", ""),
 				FinishReason: "stop",
 			}},
 			Usage: provider.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
@@ -64,12 +61,12 @@ func TestClient_Chat_Success(t *testing.T) {
 	})
 
 	resp, err := client.Chat(context.Background(), provider.ChatRequest{
-		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")},
 	})
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
-	if got := resp.FirstContent(); got != "hello back" {
+	if got := resp.Content(); got != "hello back" {
 		t.Errorf("unexpected content: %q", got)
 	}
 	if resp.Usage.TotalTokens != 3 {
@@ -87,13 +84,13 @@ func TestClient_Chat_RequestModelOverride(t *testing.T) {
 			t.Errorf("expected model override, got %s", req.Model)
 		}
 		_ = json.NewEncoder(w).Encode(provider.ChatResponse{
-			Choices: []provider.Choice{{Message: provider.Message{Content: "ok"}}},
+			Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "ok", "")}},
 		})
 	})
 
 	if _, err := client.Chat(context.Background(), provider.ChatRequest{
 		Model:    "override-model",
-		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")},
 	}); err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -111,7 +108,7 @@ func TestClient_Chat_APIError(t *testing.T) {
 	})
 
 	_, err := client.Chat(context.Background(), provider.ChatRequest{
-		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")},
 	})
 	if err == nil {
 		t.Fatalf("expected error")
@@ -138,7 +135,7 @@ func TestClient_Chat_APIError_OpenAIEnvelope(t *testing.T) {
 	})
 
 	_, err := client.Chat(context.Background(), provider.ChatRequest{
-		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")},
 	})
 	if err == nil {
 		t.Fatalf("expected error")
@@ -162,7 +159,7 @@ func TestClient_Chat_NonJSONError(t *testing.T) {
 	})
 
 	_, err := client.Chat(context.Background(), provider.ChatRequest{
-		Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}},
+		Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")},
 	})
 	if err == nil {
 		t.Fatalf("expected error")
@@ -193,7 +190,7 @@ func TestClient_Chat_ContextCanceled(t *testing.T) {
 		BaseURL: srv.URL,
 		APIKey:  "k",
 		Model:   "m",
-	}).Chat(ctx, provider.ChatRequest{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	}).Chat(ctx, provider.ChatRequest{Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")}})
 	if err == nil {
 		t.Fatalf("expected error from cancelled context")
 	}
@@ -214,7 +211,7 @@ func TestClient_Chat_Validation(t *testing.T) {
 		{
 			name:    "empty api key",
 			cfg:     provider.Config{BaseURL: "http://example.com", Model: "m"},
-			req:     provider.ChatRequest{Messages: []provider.Message{{Role: provider.RoleUser, Content: "x"}}},
+			req:     provider.ChatRequest{Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "x", "")}},
 			wantSub: "empty API key",
 		},
 		{
@@ -226,7 +223,7 @@ func TestClient_Chat_Validation(t *testing.T) {
 		{
 			name:    "empty model",
 			cfg:     provider.Config{BaseURL: "http://example.com", APIKey: "k"},
-			req:     provider.ChatRequest{Messages: []provider.Message{{Role: provider.RoleUser, Content: "x"}}},
+			req:     provider.ChatRequest{Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "x", "")}},
 			wantSub: "empty model",
 		},
 	}
@@ -247,13 +244,13 @@ func TestClient_Chat_StripsTrailingSlash(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: provider.Message{Content: "ok"}}}})
+		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "ok", "")}}})
 	}))
 	defer srv.Close()
 
 	client := provider.NewClient(provider.Config{BaseURL: srv.URL + "/", APIKey: "k", Model: "m"})
 	if _, err := client.Chat(context.Background(), provider.ChatRequest{
-		Messages: []provider.Message{{Role: provider.RoleUser, Content: "x"}},
+		Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "x", "")},
 	}); err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -273,11 +270,11 @@ func TestAPIError_Error(t *testing.T) {
 	}
 }
 
-func TestChatResponse_FirstContent_Empty(t *testing.T) {
-	if got := (*provider.ChatResponse)(nil).FirstContent(); got != "" {
+func TestChatResponse_Content_Empty(t *testing.T) {
+	if got := (*provider.ChatResponse)(nil).Content(); got != "" {
 		t.Errorf("expected empty for nil, got %q", got)
 	}
-	if got := (&provider.ChatResponse{}).FirstContent(); got != "" {
+	if got := (&provider.ChatResponse{}).Content(); got != "" {
 		t.Errorf("expected empty for no choices, got %q", got)
 	}
 }

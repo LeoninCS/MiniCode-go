@@ -18,7 +18,7 @@ MiniCode-go 是一个使用 Go 从零实现的、以 CLI 为主要交互入口�
 
 - ✅ Day 0：项目定位、功能范围和开发计划；
 - ✅ Day 1：协议结构体 + 单次非流式模型调用；
-- ⬜ Day 2：工具 Schema 定义 + 工具调用响应解析；
+- ✅ Day 2：工具 Schema 定义 + 工具调用响应解析；
 - ⬜ Day 3：Agent Loop；
 - ⬜ Day 4：`bash`、`write_file` 和工具注册表；
 - ⬜ Day 5：系统 Prompt + CLI 输入循环；
@@ -53,8 +53,11 @@ MiniCode-go/
     ├── internal/provider/             # 模型协议结构体 + OpenAI 兼容客户端(纯源码)
     │   ├── types.go
     │   └── openai.go
-    └── test/provider/                 # 测试文件单独目录(black-box)
-        └── openai_test.go
+    └── test/                          # 测试文件单独目录(black-box)
+        ├── cmd/minicode/main_test.go  # CLI 端到端 smoke
+        └── provider/
+            ├── openai_test.go
+            └── tool_calls_test.go
 ```
 
 约定:
@@ -63,7 +66,7 @@ MiniCode-go/
   风格,只测导出 API,源码目录保持干净。
 - 构建/测试命令:`go -C apps build ./...` / `go -C apps test -count=1 ./...`。
 
-## 构建与运行（Day 1）
+## 构建与运行（Day 2）
 
 ```bash
 # 构建
@@ -87,4 +90,11 @@ echo "用一句话介绍 Go 的 goroutine" | ./bin/minicode
 
 完整配置项与示例值见仓库根 [`.env.example`](.env.example)。`.env` 不进 git,放本地。
 
-Day 1 仅支持一次性非流式文本请求，工具调用、Agent Loop 与流式输出将在后续 Day 推进。
+Day 2 支持一次性非流式文本响应和结构化工具调用响应。模型请求工具时，CLI 会校验并展示所有调用，例如：
+
+```text
+tool: bash
+arguments: {"command":"go test ./..."}
+```
+
+当前只准备调用，不会执行命令；工具执行、Agent Loop 与流式输出将在后续 Day 推进。

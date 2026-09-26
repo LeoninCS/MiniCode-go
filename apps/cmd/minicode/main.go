@@ -1,9 +1,9 @@
 // Command minicode 是 MiniCode-go 项目的 CLI 入口。
 //
-// Day 1 仅支持一次性的非流式文本请求:
-// 读取用户输入,调用模型服务,把模型回复输出到 stdout。
-// 交互式会话、工具调用、Agent Loop、流式输出等能力
-// 将在 Day 2～Day 12 逐步加入。
+// 当前支持一次性的非流式请求:
+// 读取用户输入,向模型声明工具,再输出文本回复或结构化工具调用。
+// 工具执行、Agent Loop、交互式会话和流式输出等能力
+// 将在 Day 3～Day 12 逐步加入。
 package main
 
 import (
@@ -81,21 +81,69 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	resp, err := client.Chat(ctx, provider.ChatRequest{
 		Messages: []provider.Message{
-			{Role: provider.RoleUser, Content: prompt},
+			provider.NewMessage(provider.RoleUser, prompt, ""),
 		},
+		Tools: availableTools(),
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "minicode: "+err.Error())
 		return 1
 	}
 
-	content := resp.FirstContent()
+	toolCalls, err := resp.ToolCalls()
+	if err != nil {
+		fmt.Fprintln(stderr, "minicode: invalid response from model: "+err.Error())
+		return 1
+	}
+	if len(toolCalls) > 0 {
+		for i, call := range toolCalls {
+			if i > 0 {
+				fmt.Fprintln(stdout)
+			}
+			fmt.Fprintln(stdout, "tool: "+call.Function.Name)
+			fmt.Fprintln(stdout, "arguments: "+call.Function.Arguments)
+		}
+		return 0
+	}
+
+	content := resp.Content()
 	if content == "" {
 		fmt.Fprintln(stderr, "minicode: empty response from model")
 		return 1
 	}
 	fmt.Fprintln(stdout, content)
 	return 0
+}
+
+// availableTools 返回当前发送给模型的工具声明。
+// Day 2 只解析调用并展示参数,真正执行和注册工具将在后续完成。
+func availableTools() []provider.Tool {
+	bashTool := buildBashTool()
+	return []provider.Tool{bashTool}
+}
+
+// buildBashTool 构造发送给模型的 bash 工具声明。
+func buildBashTool() provider.Tool {
+	bashParameters := provider.JSONSchema{
+		"type": "object",
+		"properties": map[string]provider.JSONSchema{
+			"command": {
+				"type":        "string",
+				"description": "The shell command to run.",
+			},
+		},
+		"required":             []string{"command"},
+		"additionalProperties": false,
+	}
+	bashTool := provider.Tool{
+		Type: provider.ToolTypeFunction,
+		Function: provider.FunctionDefinition{
+			Name:        "bash",
+			Description: "Run a shell command in the current workspace.",
+			Parameters:  bashParameters,
+		},
+	}
+	return bashTool
 }
 
 // loadConfig 把 flag 显式传入的值与对应环境变量合并;

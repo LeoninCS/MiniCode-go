@@ -58,6 +58,15 @@ apps/                                # Go module 根(不是仓库根)
 - **配置模板**:仓库根 `.env.example`(不进 git,本地 `.env`),列出 env var + 常用服务的 BaseURL/Model 示例值;不引入第三方配置库
 - **目录布局 = `apps/`**:monorepo-friendly。本次实施观察到 `go mod tidy` 后目录被外部自动化从根 cmd/ internal/ 重组为 apps/,agent 接受,后续发现再改动先停下报告
 
+### Day 2(2026-08-29)
+
+- **工具协议 = Chat Completions `tools` / `tool_calls`**：函数声明携带 JSON Schema，调用参数在线格式保持 JSON 字符串
+- **参数校验边界**：Provider 校验调用 ID、类型、名称和顶层 JSON 对象；required、字段类型与未知字段由具体工具在执行前校验
+- **`strict` 默认不发送**：协议结构保留可选字段，但为兼容不同 OpenAI 风格服务不强制开启，宿主侧参数校验不能省略
+- **消息 content 可空**：`Message.Content` 使用 `*string` 且不设 `omitempty`，保留 assistant 工具调用的 `null`，空工具结果仍回传 `""`
+- **工具结果结构**：`role: tool` + `tool_call_id` + `content`，一个调用对应一条结果消息
+- **Day 2 不执行工具**：CLI 按计划声明并展示 `bash` 调用；进入 Day 4 前需统一 `bash{command}` 与 `spec.md` 中 `run_command{argv}` 的最终安全契约
+
 ## 6. 已知陷阱
 
 1. bash session 不保留 cwd,需 `cd path && cmd` 或 `go -C path cmd`,不要假设 PWD 已被切过
