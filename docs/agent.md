@@ -20,12 +20,13 @@ apps/                                # Go module 根(不是仓库根)
 ├── internal/provider/               # 模型协议 + OpenAI 兼容客户端(纯源码,无 _test.go)
 │   ├── types.go
 │   └── openai.go
+├── internal/terminal/markdown.go    # 终端检测与 Markdown 渲染
 └── test/provider/                   # 测试单独目录,black-box
     └── openai_test.go               # package provider_test
 ```
 
 - 后续 Day:源码 `apps/internal/<name>/`,测试 `apps/test/<name>/`,同名目录
-- `internal/` 不依赖 `cmd/` 或非标准库
+- `internal/` 不依赖 `cmd/`；第三方渲染与终端依赖集中在 `internal/terminal/`，`provider` 和 `tools` 继续只依赖标准库
 - go 命令全部 `go -C apps build/test/vet ./...`
 
 ## 3. 编码风格
@@ -75,6 +76,12 @@ apps/                                # Go module 根(不是仓库根)
 - **直接执行**：按用户当前要求展示并执行模型生成的命令，实时输出并把执行结果回传模型；本阶段不增加逐次确认交互，后续权限机制仍按 Day 6 推进。
 - **执行边界**：最多 10 次模型请求，沿用整项任务的 timeout；取消时终止命令进程组，单次命令输出最多保留 64 KiB。
 - **实现范围**：简单循环和 bash 执行函数，不提前引入工具注册表、交互会话和持久化。
+
+### CLI Markdown 渲染
+
+- **职责划分**：`internal/terminal` 负责终端检测、宽度读取和 Glamour 渲染；`cmd/minicode` 调用该包，不直接依赖渲染库。
+- **输出规则**：终端中的模型回复渲染 Markdown，按终端宽度换行；管道、文件和渲染失败时输出原文。工具输出和回传模型的消息保持原样。
+- **主题**：默认使用 `dracula`，通过 `GLAMOUR_STYLE` 覆盖。
 
 ## 6. 已知陷阱
 

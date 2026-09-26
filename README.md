@@ -50,6 +50,7 @@ MiniCode-go/
 └── apps/                              # Go module: github.com/MiniCode-go/minicode
     ├── go.mod
     ├── cmd/minicode/main.go           # CLI 入口
+    ├── internal/terminal/markdown.go # 终端检测与 Markdown 渲染
     ├── internal/tools/bash.go        # bash 命令执行、输出和取消
     ├── internal/provider/             # 模型协议结构体 + OpenAI 兼容客户端(纯源码)
     │   ├── types.go
@@ -91,6 +92,8 @@ echo "用一句话介绍 Go 的 goroutine" | ./bin/minicode
 ```
 
 完整配置项与示例值见仓库根 [`.env.example`](.env.example)。`.env` 不进 git,放本地。
+
+终端中的模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具调用信息和命令输出继续原样显示。
 
 CLI 支持普通文本回复和 bash 工具执行。模型请求工具时，会先打印调用信息，再执行命令、展示输出并把结果回传模型，继续请求直到得到最终回复，例如：
 

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/MiniCode-go/minicode/internal/provider"
+	"github.com/MiniCode-go/minicode/internal/terminal"
 	"github.com/MiniCode-go/minicode/internal/tools"
 )
 
@@ -59,7 +60,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	stdinIsTTY := isTerminal(stdin)
+	stdinIsTTY := terminal.IsTerminal(stdin)
 	prompt, err := readPrompt(fs.Args(), stdin, stdinIsTTY)
 	if err != nil {
 		fmt.Fprintln(stderr, "minicode: "+err.Error())
@@ -103,7 +104,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 1
 		}
 		if content != "" {
-			fmt.Fprintln(stdout, content)
+			fmt.Fprint(stdout, terminal.RenderMarkdown(stdout, content))
 		}
 		if len(toolCalls) == 0 {
 			return 0
@@ -215,7 +216,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 // readPrompt 决定用户输入来自哪:剩余的 CLI 参数,或 stdin。
-// stdinIsTTY 表示 stdin 是否是字符设备(终端),
+// stdinIsTTY 表示 stdin 是否是终端,
 // 用于在没有参数也没有管道输入时给出更友好的错误。
 func readPrompt(args []string, stdin io.Reader, stdinIsTTY bool) (string, error) {
 	if len(args) > 0 {
@@ -237,20 +238,6 @@ func readPrompt(args []string, stdin io.Reader, stdinIsTTY bool) (string, error)
 		return "", fmt.Errorf("read stdin: %w", err)
 	}
 	return sb.String(), nil
-}
-
-// isTerminal 尽量轻量地判断一个 reader 是否是 TTY。
-// 仅在传入 *os.File 时探测;否则一律返回 false。
-func isTerminal(r io.Reader) bool {
-	f, ok := r.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
 // printConfigHint 在配置缺失时给一个最小使用提示。

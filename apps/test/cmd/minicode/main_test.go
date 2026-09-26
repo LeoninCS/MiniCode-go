@@ -45,6 +45,15 @@ func TestMiniCode_Responses(t *testing.T) {
 		assertBashSchema(t, req.Tools)
 	})
 
+	t.Run("markdown stays plain in pipe", func(t *testing.T) {
+		content := "# Go 示例\n\n**加粗**\n\n- 列表\n\n```go\nfmt.Println(\"hello\")\n```"
+		srv, _ := conversationServer(t, provider.NewMessage(provider.RoleAssistant, content, ""))
+		stdout, stderr, exitCode := runMiniCode(t, binary, srv.URL)
+		if exitCode != 0 || stdout != content+"\n" || stderr != "" {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
+		}
+	})
+
 	for _, tc := range []struct {
 		name    string
 		content *string
