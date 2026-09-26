@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/MiniCode-go/minicode/internal/provider"
 )
 
-const maxTurns = 10
+const (
+	maxTurns               = 10
+	turnLimitSummaryPrompt = "已达到工具执行轮数上限。请停止调用工具，仅根据已有对话和工具结果给出最终回复。回答用户的问题，并说明已完成的工作、尚未完成的部分及原因；不要声称未验证的结果。"
+)
 
 // Output 由调用方实现,负责展示 Agent 的运行过程。
 // Write 接收工具的实时输出;模型文本与工具结果均保留原文。
@@ -66,5 +70,32 @@ func Run(ctx context.Context, client *provider.Client, prompt string, output Out
 			messages = append(messages, provider.NewMessage(provider.RoleTool, result, call.ID))
 		}
 	}
+	content, err := summarizeAtTurnLimit(ctx, client, messages)
+	if err != nil {
+		output.Message(fmt.Sprintf("已达到最大执行轮数（%d），本次任务已停止，未能生成最终总结。请结合上方工具输出确认已完成的工作。", maxTurns))
+		return fmt.Errorf("reached maximum model turns (%d); summarize: %w", maxTurns, err)
+	}
+	output.Message(content)
 	return fmt.Errorf("reached maximum model turns (%d)", maxTurns)
+}
+
+// summarizeAtTurnLimit 在完整工具结果之后请求一次总结,不再提供或执行工具。
+func summarizeAtTurnLimit(ctx context.Context, client *provider.Client, messages []provider.Message) (string, error) {
+	messages = append(messages, provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, ""))
+	resp, err := client.Chat(ctx, provider.ChatRequest{Messages: messages})
+	if err != nil {
+		return "", err
+	}
+	calls, err := resp.ToolCalls()
+	if err != nil {
+		return "", fmt.Errorf("invalid summary response: %w", err)
+	}
+	if len(calls) > 0 {
+		return "", errors.New("summary response requested tools")
+	}
+	content := resp.Content()
+	if strings.TrimSpace(content) == "" {
+		return "", errors.New("empty summary response from model")
+	}
+	return content, nil
 }

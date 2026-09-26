@@ -155,16 +155,72 @@ func TestMiniCode_Responses(t *testing.T) {
 		})
 	}
 
-	t.Run("round limit", func(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		summary   provider.Message
+		wantText  string
+		wantError string
+	}{
+		{
+			name:     "round limit summary",
+			summary:  provider.NewMessage(provider.RoleAssistant, "已达到轮数上限，完成了检查，修改尚未完成。", ""),
+			wantText: "已达到轮数上限，完成了检查，修改尚未完成。",
+		},
+		{
+			name:     "round limit empty summary",
+			summary:  provider.NewMessage(provider.RoleAssistant, " \n", ""),
+			wantText: "已达到最大执行轮数（10）", wantError: "empty summary response",
+		},
+		{
+			name: "round limit refuses more tools",
+			summary: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+				ID: "extra", Type: provider.ToolTypeFunction,
+				Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"printf should-not-run"}`},
+			}}},
+			wantText: "已达到最大执行轮数（10）", wantError: "summary response requested tools",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := provider.ToolCall{ID: "again", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":":"}`}}
+			replies := make([]provider.Message, 10)
+			for i := range replies {
+				replies[i] = provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}
+			}
+			replies = append(replies, tc.summary)
+			srv, requests := conversationServer(t, replies...)
+			stdout, stderr, exitCode := runMiniCode(t, binary, srv.URL)
+			if exitCode != 1 || !strings.Contains(stdout, tc.wantText) || !strings.Contains(stderr, "maximum model turns (10)") || !strings.Contains(stderr, tc.wantError) || len(requests) != 11 {
+				t.Fatalf("exit = %d, requests = %d, stdout = %q, stderr = %q", exitCode, len(requests), stdout, stderr)
+			}
+			if strings.Count(stdout, "tool: bash\n") != 10 || strings.Contains(stdout, "should-not-run") {
+				t.Fatalf("unexpected tool execution after limit: %q", stdout)
+			}
+			for i := 0; i < 10; i++ {
+				readRequest(t, requests)
+			}
+			request := readRequest(t, requests)
+			if len(request.Tools) != 0 || len(request.Messages) != 22 {
+				t.Fatalf("summary request = %+v", request)
+			}
+			lastResult := request.Messages[20]
+			instruction := request.Messages[21]
+			if lastResult.Role != provider.RoleTool || lastResult.ToolCallID != call.ID || instruction.Role != provider.RoleSystem || !strings.Contains(instruction.Text(), "停止调用工具") {
+				t.Fatalf("incomplete summary history: %+v", request.Messages)
+			}
+		})
+	}
+
+	t.Run("final answer on last allowed turn", func(t *testing.T) {
 		call := provider.ToolCall{ID: "again", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":":"}`}}
-		replies := make([]provider.Message, 10)
+		replies := make([]provider.Message, 9)
 		for i := range replies {
 			replies[i] = provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}
 		}
+		replies = append(replies, provider.NewMessage(provider.RoleAssistant, "done", ""))
 		srv, requests := conversationServer(t, replies...)
-		_, stderr, exitCode := runMiniCode(t, binary, srv.URL)
-		if exitCode != 1 || !strings.Contains(stderr, "maximum model turns (10)") || len(requests) != 10 {
-			t.Fatalf("exit = %d, requests = %d, stderr = %q", exitCode, len(requests), stderr)
+		stdout, stderr, exitCode := runMiniCode(t, binary, srv.URL)
+		if exitCode != 0 || !strings.HasSuffix(stdout, "done\n") || stderr != "" || len(requests) != 10 {
+			t.Fatalf("exit = %d, requests = %d, stdout = %q, stderr = %q", exitCode, len(requests), stdout, stderr)
 		}
 	})
 

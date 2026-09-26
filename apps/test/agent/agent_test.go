@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/MiniCode-go/minicode/internal/agent"
 	"github.com/MiniCode-go/minicode/internal/provider"
@@ -102,6 +103,59 @@ func TestRun_ReturnsProviderError(t *testing.T) {
 			t.Fatalf("error = %v, want context.Canceled", err)
 		}
 	})
+}
+
+func TestRun_TurnLimitSummaryFailure(t *testing.T) {
+	for _, cancelSummary := range []bool{false, true} {
+		name := "API failure"
+		if cancelSummary {
+			name = "context cancellation"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var count atomic.Int32
+			call := provider.ToolCall{ID: "again", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":":"}`}}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if count.Add(1) <= 10 {
+					message := provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}
+					_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
+					return
+				}
+				if cancelSummary {
+					cancel()
+					select {
+					case <-r.Context().Done():
+					case <-time.After(time.Second):
+					}
+					return
+				}
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"error":{"code":"summary_unavailable","message":"try later"}}`)
+			}))
+			defer srv.Close()
+			client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
+			output := &recordingOutput{}
+			err := agent.Run(ctx, client, "run tests", output)
+			if err == nil || !strings.Contains(err.Error(), "maximum model turns (10)") || count.Load() != 11 {
+				t.Fatalf("error = %v, requests = %d", err, count.Load())
+			}
+			if cancelSummary {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("error = %v, want context.Canceled", err)
+				}
+			} else {
+				var apiErr *provider.APIError
+				if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusServiceUnavailable {
+					t.Fatalf("error = %v, want provider API error", err)
+				}
+			}
+			if len(output.events) == 0 || !strings.HasPrefix(output.events[len(output.events)-1], "message:已达到最大执行轮数（10）") {
+				t.Fatalf("missing fallback content: %q", output.events)
+			}
+		})
+	}
 }
 
 type recordingOutput struct {
