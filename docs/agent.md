@@ -17,6 +17,7 @@
 ```text
 apps/                                # Go module 根(不是仓库根)
 ├── cmd/minicode/main.go             # CLI 入口
+├── internal/agent/                  # 模型循环、消息历史与工具分发
 ├── internal/provider/               # 模型协议 + OpenAI 兼容客户端(纯源码,无 _test.go)
 │   ├── types.go
 │   └── openai.go
@@ -76,6 +77,8 @@ apps/                                # Go module 根(不是仓库根)
 - **直接执行**：按用户当前要求展示并执行模型生成的命令，实时输出并把执行结果回传模型；本阶段不增加逐次确认交互，后续权限机制仍按 Day 6 推进。
 - **执行边界**：最多 10 次模型请求，沿用整项任务的 timeout；取消时终止命令进程组，单次命令输出最多保留 64 KiB。
 - **实现范围**：简单循环和 bash 执行函数，不提前引入工具注册表、交互会话和持久化。
+- **职责划分**：`internal/agent` 管理模型循环、消息历史、轮数和工具分发；工具协议适配保留在该包的 `tools.go`，实际命令执行复用 `internal/tools`。`cmd/minicode` 负责参数、输入、任务取消、展示和退出码。
+- **展示边界**：Agent 通过 `Output` 接口交付模型文本、工具调用、实时输出、结果和工具错误；不依赖终端渲染，不打印 CLI 前缀。终止任务的错误由 `Run` 返回。
 
 ### CLI Markdown 渲染
 

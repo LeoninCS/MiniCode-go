@@ -49,7 +49,12 @@ MiniCode-go/
 │   └── agent.md                       # Agent 操作规范
 └── apps/                              # Go module: github.com/MiniCode-go/minicode
     ├── go.mod
-    ├── cmd/minicode/main.go           # CLI 入口
+    ├── cmd/minicode/                  # CLI 参数、输入与展示
+    │   ├── main.go
+    │   └── output.go
+    ├── internal/agent/               # 模型循环、消息历史与工具分发
+    │   ├── agent.go
+    │   └── tools.go
     ├── internal/terminal/markdown.go # 终端检测与 Markdown 渲染
     ├── internal/tools/bash.go        # bash 命令执行、输出和取消
     ├── internal/provider/             # 模型协议结构体 + OpenAI 兼容客户端(纯源码)
@@ -57,6 +62,7 @@ MiniCode-go/
     │   └── openai.go
     └── test/                          # 测试文件单独目录(black-box)
         ├── cmd/minicode/main_test.go  # CLI 与 Agent Loop 端到端测试
+        ├── agent/agent_test.go        # Agent 输出边界与错误回传测试
         ├── tools/bash_test.go         # bash 执行、输出和取消测试
         └── provider/
             ├── openai_test.go
