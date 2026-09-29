@@ -169,7 +169,7 @@ func TestMiniCode_Responses(t *testing.T) {
 		{
 			name:     "round limit empty summary",
 			summary:  provider.NewMessage(provider.RoleAssistant, " \n", ""),
-			wantText: "已达到最大执行轮数（10）", wantError: "empty summary response",
+			wantText: "已达到最大执行轮数（500）", wantError: "empty summary response",
 		},
 		{
 			name: "round limit refuses more tools",

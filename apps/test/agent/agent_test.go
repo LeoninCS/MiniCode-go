@@ -118,7 +118,7 @@ func TestRun_TurnLimitSummaryFailure(t *testing.T) {
 			call := provider.ToolCall{ID: "again", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":":"}`}}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				if count.Add(1) <= 10 {
+				if count.Add(1) <= 500 {
 					message := provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}
 					_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
 					return
@@ -138,7 +138,7 @@ func TestRun_TurnLimitSummaryFailure(t *testing.T) {
 			client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
 			output := &recordingOutput{}
 			err := agent.Run(ctx, client, "run tests", output)
-			if err == nil || !strings.Contains(err.Error(), "maximum model turns (10)") || count.Load() != 11 {
+			if err == nil || !strings.Contains(err.Error(), "maximum model turns (500)") || count.Load() != 501 {
 				t.Fatalf("error = %v, requests = %d", err, count.Load())
 			}
 			if cancelSummary {
@@ -151,7 +151,7 @@ func TestRun_TurnLimitSummaryFailure(t *testing.T) {
 					t.Fatalf("error = %v, want provider API error", err)
 				}
 			}
-			if len(output.events) == 0 || !strings.HasPrefix(output.events[len(output.events)-1], "message:已达到最大执行轮数（10）") {
+			if len(output.events) == 0 || !strings.HasPrefix(output.events[len(output.events)-1], "message:已达到最大执行轮数（500）") {
 				t.Fatalf("missing fallback content: %q", output.events)
 			}
 		})

@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	maxTurns               = 10
+	maxTurns               = 500
 	turnLimitSummaryPrompt = "已达到工具执行轮数上限。请停止调用工具，仅根据已有对话和工具结果给出最终回复。回答用户的问题，并说明已完成的工作、尚未完成的部分及原因；不要声称未验证的结果。"
 )
 
