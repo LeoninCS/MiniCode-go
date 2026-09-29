@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/MiniCode-go/minicode/internal/provider"
 )
 
 const (
@@ -55,6 +57,41 @@ func RunBash(ctx context.Context, command string, stdout io.Writer) (string, err
 	return output.buffer.String(), nil
 }
 
+// executeBashTool 校验命令参数并执行 bash,实时输出命令结果。
+func executeBashTool(ctx context.Context, call provider.ToolCall, stdout io.Writer) (string, error) {
+	var arguments map[string]any
+	if err := call.DecodeArguments(&arguments); err != nil {
+		return "", err
+	}
+	command, ok := arguments["command"].(string)
+	if !ok {
+		return "", errors.New("bash: command must be a string")
+	}
+	if len(arguments) != 1 {
+		return "", errors.New("bash: only the command parameter is supported")
+	}
+	return RunBash(ctx, command, stdout)
+}
+
+// buildBashTool 构造发送给模型的 bash 工具声明。
+func buildBashTool() provider.Tool {
+	return provider.Tool{
+		Type: provider.ToolTypeFunction,
+		Function: provider.FunctionDefinition{
+			Name:        toolNameBash,
+			Description: "Run a shell command in the current workspace.",
+			Parameters: provider.JSONSchema{
+				"type": "object",
+				"properties": map[string]provider.JSONSchema{
+					"command": {"type": "string", "description": "The shell command to run."},
+				},
+				"required":             []string{"command"},
+				"additionalProperties": false,
+			},
+		},
+	}
+}
+
 // commandOutput 限制终端显示和回传模型的输出大小,继续接收并丢弃超出部分。
 type commandOutput struct {
 	stdout    io.Writer
@@ -62,6 +99,7 @@ type commandOutput struct {
 	truncated bool
 }
 
+// Write 截断超出上限的部分,始终返回原始长度以避免 os/exec 提前终止写入。
 func (o *commandOutput) Write(p []byte) (int, error) {
 	size := len(p)
 	if o.truncated {

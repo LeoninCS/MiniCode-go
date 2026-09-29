@@ -182,7 +182,7 @@ func TestEditFile_RequiresReadAndRejectsStaleContent(t *testing.T) {
 	files, workspace := newFileTools(t)
 	putFile(t, workspace, "input.txt", "one\ntarget\n")
 	ctx := context.Background()
-	if _, err := files.EditFile(ctx, "input.txt", "target", "changed", false); err == nil || !strings.Contains(err.Error(), "read_file") {
+	if _, err := files.EditFile(ctx, "input.txt", "target", "changed", false); err == nil || !strings.Contains(err.Error(), "read this path") {
 		t.Fatalf("edit without read: %v", err)
 	}
 	if _, err := files.ReadFile(ctx, "input.txt", 2, 1); err != nil {

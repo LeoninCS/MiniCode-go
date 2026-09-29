@@ -42,7 +42,7 @@ func TestMiniCode_Responses(t *testing.T) {
 		}
 
 		req := <-requestCh
-		assertBashSchema(t, req.Tools)
+		assertBuiltinSchemas(t, req.Tools)
 	})
 
 	t.Run("markdown stays plain in pipe", func(t *testing.T) {
@@ -320,22 +320,39 @@ func runMiniCode(t *testing.T, binary, baseURL string, flags ...string) (string,
 	return stdout.String(), stderr.String(), exitErr.ExitCode()
 }
 
-func assertBashSchema(t *testing.T, tools []provider.Tool) {
+// assertBuiltinSchemas 校验首次请求带上四个内置工具,名称、顺序和关键参数类型都要正确。
+func assertBuiltinSchemas(t *testing.T, tools []provider.Tool) {
 	t.Helper()
-	if len(tools) != 1 {
+	want := []struct {
+		name       string
+		properties map[string]string
+	}{
+		{"read", map[string]string{"path": "string", "offset": "integer", "limit": "integer"}},
+		{"bash", map[string]string{"command": "string"}},
+		{"edit", map[string]string{"path": "string", "old_text": "string", "new_text": "string", "replace_all": "boolean"}},
+		{"write", map[string]string{"path": "string", "content": "string"}},
+	}
+	if len(tools) != len(want) {
 		t.Fatalf("tools = %+v", tools)
 	}
-	tool := tools[0]
-	if tool.Type != provider.ToolTypeFunction || tool.Function.Name != "bash" {
-		t.Fatalf("tool = %+v", tool)
-	}
-	properties, ok := tool.Function.Parameters["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("properties = %#v", tool.Function.Parameters["properties"])
-	}
-	command, ok := properties["command"].(map[string]any)
-	if !ok || command["type"] != "string" {
-		t.Fatalf("command schema = %#v", properties["command"])
+	for i, expected := range want {
+		tool := tools[i]
+		if tool.Type != provider.ToolTypeFunction || tool.Function.Name != expected.name || tool.Function.Description == "" {
+			t.Fatalf("tool = %+v, want %s", tool, expected.name)
+		}
+		if tool.Function.Parameters["type"] != "object" || tool.Function.Parameters["additionalProperties"] != false {
+			t.Fatalf("%s schema = %+v", expected.name, tool.Function.Parameters)
+		}
+		properties, ok := tool.Function.Parameters["properties"].(map[string]any)
+		if !ok || len(properties) != len(expected.properties) {
+			t.Fatalf("%s properties = %#v", expected.name, tool.Function.Parameters["properties"])
+		}
+		for name, kind := range expected.properties {
+			property, ok := properties[name].(map[string]any)
+			if !ok || property["type"] != kind {
+				t.Fatalf("%s.%s schema = %#v", expected.name, name, properties[name])
+			}
+		}
 	}
 }
 

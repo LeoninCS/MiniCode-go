@@ -92,6 +92,7 @@ func fsReadFile(ctx context.Context, root *os.Root, path string) ([]byte, error)
 	return content, nil
 }
 
+// validateText 拒绝超出大小限制以及非 UTF-8 或含 NUL 字节的内容。
 func validateText(content []byte) error {
 	if len(content) > maxFileBytes {
 		return fmt.Errorf("content exceeds %d byte limit", maxFileBytes)
@@ -162,7 +163,7 @@ func fsWriteFile(ctx context.Context, root *os.Root, path string, content []byte
 			return fmt.Errorf("recheck file: %w", err)
 		}
 		if sha256.Sum256(current) != *expected {
-			return errors.New("file changed since last read or write; read_file again before editing")
+			return errors.New("file changed since last read or write; read the file again before editing")
 		}
 	}
 	if err := ctx.Err(); err != nil {

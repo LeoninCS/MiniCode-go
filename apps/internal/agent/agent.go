@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/MiniCode-go/minicode/internal/provider"
+	"github.com/MiniCode-go/minicode/internal/tools"
 )
 
 const (
@@ -29,9 +30,23 @@ type Output interface {
 
 // Run 执行一次任务,直到模型给出最终回复、达到轮数上限或发生不可恢复错误。
 // 调用方负责设置 ctx 的超时和取消,并提供 Output 实现。
+// 文件工具以进程当前工作目录为工作区,任务结束时释放。
 func Run(ctx context.Context, client *provider.Client, prompt string, output Output) error {
+	files, err := tools.NewFileTools(".")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := files.Close(); err != nil {
+			output.ToolError(err)
+		}
+	}()
+	registry, err := tools.NewBuiltinToolRegistry(files)
+	if err != nil {
+		return err
+	}
 	messages := []provider.Message{provider.NewMessage(provider.RoleUser, prompt, "")}
-	toolDefinitions := availableTools()
+	toolDefinitions := registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
 		resp, err := client.Chat(ctx, provider.ChatRequest{
 			Messages: messages,
@@ -58,7 +73,7 @@ func Run(ctx context.Context, client *provider.Client, prompt string, output Out
 		messages = append(messages, resp.Choices[0].Message)
 		for _, call := range toolCalls {
 			output.ToolCall(call)
-			result, err := executeTool(ctx, call, output)
+			result, err := registry.Execute(ctx, call, output)
 			output.ToolResult(result)
 			if ctx.Err() != nil {
 				return ctx.Err()
