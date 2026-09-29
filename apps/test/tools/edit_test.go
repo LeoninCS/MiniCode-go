@@ -2,6 +2,7 @@ package tools_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -13,15 +14,95 @@ func TestEditFile_ExactReplacementAndDeletion(t *testing.T) {
 	if _, err := files.ReadFile(ctx, "./input.txt", 2, 1); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := files.EditFile(ctx, "nested/../input.txt", "旧文本", "新文本"); err != nil || !strings.Contains(result, "input.txt") {
+	if result, err := files.EditFile(ctx, "nested/../input.txt", "旧文本", "新文本", false); err != nil || !strings.Contains(result, "input.txt") {
 		t.Fatalf("edit = %q, %v", result, err)
 	}
 	assertFile(t, workspace, "input.txt", "before\r\n新文本\r\nafter\r\n")
 	// 成功编辑后更新版本,允许继续编辑;删除通过空的新文本完成。
-	if _, err := files.EditFile(ctx, "input.txt", "新文本\r\n", ""); err != nil {
+	if _, err := files.EditFile(ctx, "input.txt", "新文本\r\n", "", false); err != nil {
 		t.Fatal(err)
 	}
 	assertFile(t, workspace, "input.txt", "before\r\nafter\r\n")
+}
+
+func TestEditFile_RetryWithSurroundingCode(t *testing.T) {
+	files, workspace := newFileTools(t)
+	content := "name := \"old\"\nbackup := \"old\"\n"
+	putFile(t, workspace, "input.txt", content)
+	ctx := context.Background()
+	if _, err := files.ReadFile(ctx, "input.txt", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.EditFile(ctx, "input.txt", "old", "new", false); err == nil || !strings.Contains(err.Error(), "include surrounding code") {
+		t.Fatalf("ambiguous edit should request surrounding code: %v", err)
+	}
+	assertFile(t, workspace, "input.txt", content)
+	if _, err := files.EditFile(ctx, "input.txt", `name := "old"`, `name := "new"`, false); err != nil {
+		t.Fatalf("edit with surrounding code: %v", err)
+	}
+	assertFile(t, workspace, "input.txt", "name := \"new\"\nbackup := \"old\"\n")
+}
+
+func TestEditFile_ReplaceAll(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		oldText string
+		newText string
+		want    string
+		count   int
+	}{
+		{name: "multiple matches", content: "old middle old", oldText: "old", newText: "new", want: "new middle new", count: 2},
+		{name: "single match", content: "before old after", oldText: "old", newText: "new", want: "before new after", count: 1},
+		{name: "deletion", content: "old keep old", oldText: "old", want: " keep ", count: 2},
+		{name: "replacement contains old text", content: "old old", oldText: "old", newText: "old new", want: "old new old new", count: 2},
+		{name: "overlapping candidates", content: "aaaaa", oldText: "aa", newText: "x", want: "xxa", count: 2},
+		{
+			name: "normalized multiline matches", content: "旧\r\n文本\r\n旧\n文本\n",
+			oldText: "旧\n文本\n", newText: "新\n文本\n",
+			want: "新\r\n文本\r\n新\r\n文本\r\n", count: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files, workspace := newFileTools(t)
+			putFile(t, workspace, "input.txt", tc.content)
+			ctx := context.Background()
+			if _, err := files.ReadFile(ctx, "input.txt", 0, 0); err != nil {
+				t.Fatal(err)
+			}
+			result, err := files.EditFile(ctx, "input.txt", tc.oldText, tc.newText, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantResult := fmt.Sprintf("Replaced %d occurrences in input.txt", tc.count)
+			if tc.count == 1 {
+				wantResult = "Replaced one occurrence in input.txt"
+			}
+			if result != wantResult {
+				t.Fatalf("result = %q, want %q", result, wantResult)
+			}
+			assertFile(t, workspace, "input.txt", tc.want)
+			// 连续编辑验证版本记录对应最终写入的字节,包括恢复后的 CRLF。
+			if _, err := files.EditFile(ctx, "input.txt", tc.want, "done", false); err != nil {
+				t.Fatalf("edit after replacing all: %v", err)
+			}
+			assertFile(t, workspace, "input.txt", "done")
+		})
+	}
+}
+
+func TestEditFile_ReplaceAllRejectsStaleContent(t *testing.T) {
+	files, workspace := newFileTools(t)
+	putFile(t, workspace, "input.txt", "old old")
+	ctx := context.Background()
+	if _, err := files.ReadFile(ctx, "input.txt", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	putFile(t, workspace, "input.txt", "old external old")
+	if _, err := files.EditFile(ctx, "input.txt", "old", "new", true); err == nil || !strings.Contains(err.Error(), "changed since last read") {
+		t.Fatalf("replace all after external change: %v", err)
+	}
+	assertFile(t, workspace, "input.txt", "old external old")
 }
 
 func TestEditFile_NormalizesLineEndings(t *testing.T) {
@@ -75,7 +156,7 @@ func TestEditFile_NormalizesLineEndings(t *testing.T) {
 			if _, err := files.ReadFile(ctx, "input.txt", 0, 0); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := files.EditFile(ctx, "input.txt", tc.oldText, tc.newText); err != nil {
+			if _, err := files.EditFile(ctx, "input.txt", tc.oldText, tc.newText, false); err != nil {
 				t.Fatal(err)
 			}
 			assertFile(t, workspace, "input.txt", tc.want)
@@ -91,7 +172,7 @@ func TestEditFile_RejectsExternalLineEndingChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	putFile(t, workspace, "input.txt", "old\nafter\n")
-	if _, err := files.EditFile(ctx, "input.txt", "old\nafter", "new\nafter"); err == nil || !strings.Contains(err.Error(), "changed since last read") {
+	if _, err := files.EditFile(ctx, "input.txt", "old\nafter", "new\nafter", false); err == nil || !strings.Contains(err.Error(), "changed since last read") {
 		t.Fatalf("edit after external line ending change: %v", err)
 	}
 	assertFile(t, workspace, "input.txt", "old\nafter\n")
@@ -101,7 +182,7 @@ func TestEditFile_RequiresReadAndRejectsStaleContent(t *testing.T) {
 	files, workspace := newFileTools(t)
 	putFile(t, workspace, "input.txt", "one\ntarget\n")
 	ctx := context.Background()
-	if _, err := files.EditFile(ctx, "input.txt", "target", "changed"); err == nil || !strings.Contains(err.Error(), "read_file") {
+	if _, err := files.EditFile(ctx, "input.txt", "target", "changed", false); err == nil || !strings.Contains(err.Error(), "read_file") {
 		t.Fatalf("edit without read: %v", err)
 	}
 	if _, err := files.ReadFile(ctx, "input.txt", 2, 1); err != nil {
@@ -109,21 +190,21 @@ func TestEditFile_RequiresReadAndRejectsStaleContent(t *testing.T) {
 	}
 	// 即使修改发生在未展示的行中,且文件大小相同,也应检测到版本变化。
 	putFile(t, workspace, "input.txt", "two\ntarget\n")
-	if _, err := files.EditFile(ctx, "input.txt", "target", "changed"); err == nil || !strings.Contains(err.Error(), "changed since last read") {
+	if _, err := files.EditFile(ctx, "input.txt", "target", "changed", false); err == nil || !strings.Contains(err.Error(), "changed since last read") {
 		t.Fatalf("edit stale file: %v", err)
 	}
 	assertFile(t, workspace, "input.txt", "two\ntarget\n")
 	if _, err := files.ReadFile(ctx, "input.txt", 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := files.EditFile(ctx, "input.txt", "target", "changed"); err != nil {
+	if _, err := files.EditFile(ctx, "input.txt", "target", "changed", false); err != nil {
 		t.Fatalf("edit after reread: %v", err)
 	}
 	assertFile(t, workspace, "input.txt", "two\nchanged\n")
 	if _, err := files.WriteFile(ctx, "input.txt", "replacement"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := files.EditFile(ctx, "input.txt", "replacement", "changed"); err != nil {
+	if _, err := files.EditFile(ctx, "input.txt", "replacement", "changed", false); err != nil {
 		t.Fatalf("edit after full write: %v", err)
 	}
 	assertFile(t, workspace, "input.txt", "changed")
@@ -131,11 +212,12 @@ func TestEditFile_RequiresReadAndRejectsStaleContent(t *testing.T) {
 
 func TestEditFile_RejectsAmbiguousOrInvalidChanges(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		content string
-		oldText string
-		newText string
-		wantErr string
+		name       string
+		content    string
+		oldText    string
+		newText    string
+		wantErr    string
+		replaceAll bool
 	}{
 		{name: "empty old text", content: "text", wantErr: "must not be empty"},
 		{name: "no match", content: "text", oldText: "missing", wantErr: "was not found"},
@@ -146,6 +228,10 @@ func TestEditFile_RejectsAmbiguousOrInvalidChanges(t *testing.T) {
 		{name: "invalid UTF-8", content: "text", oldText: "text", newText: "\xff", wantErr: "UTF-8"},
 		{name: "oversized result", content: "ab", oldText: "a", newText: strings.Repeat("x", 1<<20), wantErr: "limit"},
 		{name: "oversized CRLF result", content: "old\r\n", oldText: "old\n", newText: strings.Repeat("x\n", 1<<19), wantErr: "limit"},
+		{name: "replace all empty old text", content: "text", replaceAll: true, wantErr: "must not be empty"},
+		{name: "replace all no match", content: "text", oldText: "missing", replaceAll: true, wantErr: "was not found"},
+		{name: "replace all oversized result", content: "aa", oldText: "a", newText: strings.Repeat("x", (1<<19)+1), replaceAll: true, wantErr: "limit"},
+		{name: "replace all oversized CRLF result", content: "old\r\nold\r\n", oldText: "old\n", newText: strings.Repeat("x\n", 1<<18), replaceAll: true, wantErr: "limit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			files, workspace := newFileTools(t)
@@ -154,10 +240,14 @@ func TestEditFile_RejectsAmbiguousOrInvalidChanges(t *testing.T) {
 			if _, err := files.ReadFile(ctx, "input.txt", 0, 0); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := files.EditFile(ctx, "input.txt", tc.oldText, tc.newText); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			if _, err := files.EditFile(ctx, "input.txt", tc.oldText, tc.newText, tc.replaceAll); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error = %v, want %q", err, tc.wantErr)
 			}
 			assertFile(t, workspace, "input.txt", tc.content)
+			if _, err := files.EditFile(ctx, "input.txt", tc.content, "recovered", false); err != nil {
+				t.Fatalf("edit after failed replacement: %v", err)
+			}
+			assertFile(t, workspace, "input.txt", "recovered")
 		})
 	}
 }

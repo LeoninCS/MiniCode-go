@@ -62,7 +62,7 @@ func TestFileTools_RejectsInvalidPaths(t *testing.T) {
 			if _, err := files.WriteFile(ctx, path, "changed"); err == nil {
 				t.Fatal("write accepted invalid path")
 			}
-			if _, err := files.EditFile(ctx, path, "original", "changed"); err == nil {
+			if _, err := files.EditFile(ctx, path, "original", "changed", false); err == nil {
 				t.Fatal("edit accepted invalid path")
 			}
 		})
@@ -93,7 +93,7 @@ func TestFileTools_SymbolicLinks(t *testing.T) {
 		if _, err := files.WriteFile(ctx, path, "changed"); err == nil {
 			t.Fatalf("write escaped through %s", path)
 		}
-		if _, err := files.EditFile(ctx, path, "outside", "changed"); err == nil {
+		if _, err := files.EditFile(ctx, path, "outside", "changed", false); err == nil {
 			t.Fatalf("edit escaped through %s", path)
 		}
 	}
@@ -123,7 +123,7 @@ func TestFileTools_SymbolicLinks(t *testing.T) {
 	if _, err := files.WriteFile(ctx, "file-link", "changed"); err == nil {
 		t.Fatal("write accepted a file symlink")
 	}
-	if _, err := files.EditFile(ctx, "file-link", "inside", "changed"); err == nil {
+	if _, err := files.EditFile(ctx, "file-link", "inside", "changed", false); err == nil {
 		t.Fatal("edit accepted a file symlink")
 	}
 	assertFile(t, workspace, "real/inside.txt", "inside")
@@ -141,7 +141,8 @@ func TestFileTools_Cancellation(t *testing.T) {
 		func() (string, error) { return files.ReadFile(ctx, "keep.txt", 0, 0) },
 		func() (string, error) { return files.WriteFile(ctx, "new/file.txt", "changed") },
 		func() (string, error) { return files.WriteFile(ctx, "keep.txt", "changed") },
-		func() (string, error) { return files.EditFile(ctx, "keep.txt", "original", "changed") },
+		func() (string, error) { return files.EditFile(ctx, "keep.txt", "original", "changed", false) },
+		func() (string, error) { return files.EditFile(ctx, "keep.txt", "original", "changed", true) },
 	} {
 		if _, err := run(); !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want context.Canceled", err)
@@ -155,10 +156,10 @@ func TestFileTools_Cancellation(t *testing.T) {
 }
 
 func TestFileTools_AtomicReplacementPreservesPermissions(t *testing.T) {
-	for _, operation := range []string{"write", "edit"} {
+	for _, operation := range []string{"write", "edit", "edit all"} {
 		t.Run(operation, func(t *testing.T) {
 			files, workspace := newFileTools(t)
-			putFile(t, workspace, "script.sh", "original")
+			putFile(t, workspace, "script.sh", "original original")
 			path := filepath.Join(workspace, "script.sh")
 			if err := os.Chmod(path, 0o751); err != nil {
 				t.Fatal(err)
@@ -172,16 +173,20 @@ func TestFileTools_AtomicReplacementPreservesPermissions(t *testing.T) {
 				t.Fatal(err)
 			}
 			var err error
+			want := "changed"
 			if operation == "write" {
 				_, err = files.WriteFile(ctx, "script.sh", "changed")
+			} else if operation == "edit all" {
+				_, err = files.EditFile(ctx, "script.sh", "original", "changed", true)
+				want = "changed changed"
 			} else {
-				_, err = files.EditFile(ctx, "script.sh", "original", "changed")
+				_, err = files.EditFile(ctx, "script.sh", "original original", "changed", false)
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			assertFile(t, workspace, "script.sh", "changed")
-			assertFile(t, workspace, "old-inode", "original")
+			assertFile(t, workspace, "script.sh", want)
+			assertFile(t, workspace, "old-inode", "original original")
 			info, err := os.Stat(path)
 			if err != nil || info.Mode().Perm() != 0o751 {
 				t.Fatalf("file permissions not preserved: %v, %v", info, err)

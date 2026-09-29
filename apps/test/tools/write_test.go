@@ -53,7 +53,7 @@ func TestWriteFile_UpdatesVersionAfterSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 新建文件后可直接编辑,无需额外调用 ReadFile。
-	if _, err := files.EditFile(ctx, "input.txt", "original", "edited"); err != nil {
+	if _, err := files.EditFile(ctx, "input.txt", "original", "edited", false); err != nil {
 		t.Fatalf("edit newly written file: %v", err)
 	}
 	assertFile(t, workspace, "input.txt", "edited")
@@ -64,7 +64,7 @@ func TestWriteFile_UpdatesVersionAfterSuccess(t *testing.T) {
 		t.Fatalf("canceled write: %v", err)
 	}
 	// 写入失败必须保留已有版本,后续仍能基于原内容编辑。
-	if _, err := files.EditFile(ctx, "input.txt", "edited", "current"); err != nil {
+	if _, err := files.EditFile(ctx, "input.txt", "edited", "current", false); err != nil {
 		t.Fatalf("edit after failed write: %v", err)
 	}
 	assertFile(t, workspace, "input.txt", "current")
@@ -73,7 +73,7 @@ func TestWriteFile_UpdatesVersionAfterSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	putFile(t, workspace, "input.txt", "written externally")
-	if _, err := files.EditFile(ctx, "input.txt", "written", "changed"); err == nil || !strings.Contains(err.Error(), "changed since last read or write") {
+	if _, err := files.EditFile(ctx, "input.txt", "written", "changed", false); err == nil || !strings.Contains(err.Error(), "changed since last read or write") {
 		t.Fatalf("edit should reject external changes after write: %v", err)
 	}
 	assertFile(t, workspace, "input.txt", "written externally")
