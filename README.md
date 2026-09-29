@@ -20,7 +20,7 @@ MiniCode-go 是一个使用 Go 从零实现的、以 CLI 为主要交互入口�
 - ✅ Day 1：协议结构体 + 单次非流式模型调用；
 - ✅ Day 2：工具 Schema 定义 + 工具调用响应解析；
 - ✅ Day 3：Agent Loop；
-- 🔄 Day 4：已接入 `bash`；`write_file` 和工具注册表待实现；
+- 🔄 Day 4：已接入 `bash` / `read` / `write` / `edit` 四个工具与工具注册表；
 - ⬜ Day 5：系统 Prompt + CLI 输入循环；
 - ⬜ Day 6：输出截断、轮数上限和执行前确认；
 - ⬜ Day 7：token 统计和过程可视化；
@@ -37,6 +37,7 @@ MiniCode-go 是一个使用 Go 从零实现的、以 CLI 为主要交互入口�
 - [`docs/spec.md`](docs/spec.md)：项目定位、功能规格、开发计划和验收标准；
 - [`docs/plan.md`](docs/plan.md)：按天拆分的开发任务和完成状态；
 - [`docs/agent.md`](docs/agent.md)：Agent 操作规范（硬边界、已固化决策、已知陷阱），用于防止多 Day 实施中的细节漂移。
+- [`docs/tools.md`](docs/tools.md)：工具体系（目录职责、内置工具、注册表机制与决策记录）。
 
 ## 目录结构
 
@@ -46,24 +47,36 @@ MiniCode-go/
 ├── docs/
 │   ├── spec.md
 │   ├── plan.md
-│   └── agent.md                       # Agent 操作规范
+│   ├── agent.md                       # Agent 操作规范
+│   └── tools.md                       # 工具体系
 └── apps/                              # Go module: github.com/MiniCode-go/minicode
     ├── go.mod
     ├── cmd/minicode/                  # CLI 参数、输入与展示
     │   ├── main.go
     │   └── output.go
-    ├── internal/agent/               # 模型循环、消息历史与工具分发
-    │   ├── agent.go
-    │   └── tools.go
-    ├── internal/terminal/markdown.go # 终端检测与 Markdown 渲染
-    ├── internal/tools/bash.go        # bash 命令执行、输出和取消
-    ├── internal/provider/             # 模型协议结构体 + OpenAI 兼容客户端(纯源码)
+    ├── internal/agent/                 # 模型循环与消息历史
+    │   └── agent.go
+    ├── internal/terminal/markdown.go  # 终端检测与 Markdown 渲染
+    ├── internal/tools/                 # 工具实现 + 注册机制
+    │   ├── registry.go                # Tool、ToolRegistry、参数公共校验
+    │   ├── bash.go                    # bash 执行、输出截断与取消
+    │   ├── read.go                    # read 工具
+    │   ├── write.go                   # write 工具
+    │   ├── edit.go                    # edit 工具
+    │   └── filesystem.go              # 工作区句柄、原子写入与版本记录
+    ├── internal/provider/              # 模型协议结构体 + OpenAI 兼容客户端(纯源码)
     │   ├── types.go
     │   └── openai.go
-    └── test/                          # 测试文件单独目录(black-box)
-        ├── cmd/minicode/main_test.go  # CLI 与 Agent Loop 端到端测试
-        ├── agent/agent_test.go        # Agent 输出边界与错误回传测试
-        ├── tools/bash_test.go         # bash 执行、输出和取消测试
+    └── test/                           # 测试文件单独目录(black-box)
+        ├── cmd/minicode/main_test.go   # CLI 与 Agent Loop 端到端测试
+        ├── agent/agent_test.go         # Agent 输出边界与错误回传测试
+        ├── tools/                      # 文件工具、bash 与注册表测试
+        │   ├── bash_test.go
+        │   ├── read_test.go
+        │   ├── write_test.go
+        │   ├── edit_test.go
+        │   ├── filesystem_test.go
+        │   └── registry_test.go
         └── provider/
             ├── openai_test.go
             └── tool_calls_test.go
@@ -101,7 +114,7 @@ echo "用一句话介绍 Go 的 goroutine" | ./bin/minicode
 
 终端中的模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具调用信息和命令输出继续原样显示。
 
-CLI 支持普通文本回复和 bash 工具执行。模型请求工具时，会先打印调用信息，再执行命令、展示输出并把结果回传模型，继续请求直到得到最终回复，例如：
+CLI 支持普通文本回复和 `bash` / `read` / `write` / `edit` 四个工具。模型请求工具时，会先打印调用信息，再执行、展示输出并把结果回传模型，继续请求直到得到最终回复，例如：
 
 ```text
 tool: bash
@@ -120,4 +133,4 @@ go -C apps run ./cmd/minicode "请调用 bash 执行 date -u; date，然后说�
 go -C apps test -count=1 ./test/...
 ```
 
-当前采用直接执行模式；交互确认、工具注册表和流式输出仍在后续计划中。
+当前采用直接执行模式；交互确认、流式输出和上下文压缩仍在后续计划中。工具的组织方式与注册表机制见 [`docs/tools.md`](docs/tools.md)。

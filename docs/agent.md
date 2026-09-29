@@ -17,7 +17,12 @@
 ```text
 apps/                                # Go module 根(不是仓库根)
 ├── cmd/minicode/main.go             # CLI 入口
-├── internal/agent/                  # 模型循环、消息历史与工具分发
+├── internal/agent/                  # 模型循环与消息历史
+├── internal/tools/                  # 工具实现 + 注册机制
+│   ├── registry.go                  # Tool、ToolRegistry、参数公共校验
+│   ├── bash.go                      # RunBash + execute*Tool + build*Tool
+│   ├── read.go / write.go / edit.go # 同上,按工具分文件
+│   └── filesystem.go                # FileTools、工作区句柄与原子写入
 ├── internal/provider/               # 模型协议 + OpenAI 兼容客户端(纯源码,无 _test.go)
 │   ├── types.go
 │   └── openai.go
@@ -27,6 +32,7 @@ apps/                                # Go module 根(不是仓库根)
 ```
 
 - 后续 Day:源码 `apps/internal/<name>/`,测试 `apps/test/<name>/`,同名目录
+- 测试文件名与被测源文件同名对应;工具体系细节见 `tools.md`
 - `internal/` 不依赖 `cmd/`；第三方渲染与终端依赖集中在 `internal/terminal/`，`provider` 和 `tools` 继续只依赖标准库
 - go 命令全部 `go -C apps build/test/vet ./...`
 
