@@ -1,11 +1,12 @@
 // Command minicode 是 MiniCode-go 项目的 CLI 入口。
 //
-// 解析配置和输入,创建任务上下文并启动 Agent,展示结果和错误。
-// 当前使用非流式请求,交互式会话和流式输出将在后续加入。
+// 始终进入交互循环,从 stdin 逐行读取任务;
+// 位置参数会作为循环的第一轮输入,方便 `minicode "任务"` 直接开工。
+// 整个循环共用一个会话,历史跨轮累积。
+// 当前使用非流式请求,流式输出将在后续加入。
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -19,7 +20,6 @@ import (
 
 	"github.com/MiniCode-go/minicode/internal/agent"
 	"github.com/MiniCode-go/minicode/internal/provider"
-	"github.com/MiniCode-go/minicode/internal/terminal"
 )
 
 const (
@@ -41,7 +41,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		apiKey  = fs.String("api-key", "", "模型服务 API Key(覆盖 MINICODE_API_KEY)")
 		baseURL = fs.String("base-url", "", "模型服务 Base URL,例如 https://api.openai.com/v1(覆盖 MINICODE_BASE_URL)")
 		model   = fs.String("model", "", "模型名(覆盖 MINICODE_MODEL)")
-		timeout = fs.Duration("timeout", 60*time.Second, "整个任务的超时时间(含模型请求和命令执行)")
+		timeout = fs.Duration("timeout", 60*time.Second, "单轮任务的超时时间(含模型请求和命令执行)")
 	)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -57,34 +57,31 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	stdinIsTTY := terminal.IsTerminal(stdin)
-	prompt, err := readPrompt(fs.Args(), stdin, stdinIsTTY)
-	if err != nil {
-		fmt.Fprintln(stderr, "minicode: "+err.Error())
-		return 2
-	}
-	if strings.TrimSpace(prompt) == "" {
-		fmt.Fprintln(stderr, "minicode: empty prompt")
-		return 2
-	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
-	defer cancelTimeout()
-
 	client := provider.NewClient(provider.Config{
 		BaseURL: baseURLVal,
 		APIKey:  apiKeyVal,
 		Model:   modelVal,
 	})
 
+	// Ctrl+C 和 SIGTERM 结束整个进程;单轮超时由 timeout 单独控制。
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	output := &cliOutput{stdout: stdout, stderr: stderr}
-	if err := agent.Run(ctx, client, prompt, output); err != nil {
+	session, err := agent.NewSession(client)
+	if err != nil {
 		fmt.Fprintln(stderr, "minicode: "+err.Error())
 		return 1
 	}
-	return 0
+	defer func() {
+		if err := session.Close(); err != nil {
+			fmt.Fprintln(stderr, "minicode: "+err.Error())
+		}
+	}()
+
+	// 位置参数当作循环的第一行输入,之后继续读 stdin;什么都不传就只读 stdin。
+	// 因此始终只有一条路径:`minicode` 是循环,`minicode "任务"` 是先做这一轮再进入循环。
+	return session.Run(ctx, output, fs.Args(), *timeout, stdin, stdout)
 }
 
 // loadConfig 把 flag 显式传入的值与对应环境变量合并;
@@ -118,34 +115,10 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// readPrompt 决定用户输入来自哪:剩余的 CLI 参数,或 stdin。
-// stdinIsTTY 表示 stdin 是否是终端,
-// 用于在没有参数也没有管道输入时给出更友好的错误。
-func readPrompt(args []string, stdin io.Reader, stdinIsTTY bool) (string, error) {
-	if len(args) > 0 {
-		return strings.Join(args, " "), nil
-	}
-	if stdinIsTTY {
-		return "", errors.New("no prompt provided (pass it as argument or pipe via stdin)")
-	}
-	scanner := bufio.NewScanner(stdin)
-	scanner.Buffer(make([]byte, 1024), 1<<20)
-	var sb strings.Builder
-	for scanner.Scan() {
-		if sb.Len() > 0 {
-			sb.WriteByte('\n')
-		}
-		sb.WriteString(scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("read stdin: %w", err)
-	}
-	return sb.String(), nil
-}
-
 // printConfigHint 在配置缺失时给一个最小使用提示。
 func printConfigHint(w io.Writer) {
 	fmt.Fprintln(w, "usage:")
+	fmt.Fprintln(w, "  MINICODE_API_KEY=... MINICODE_BASE_URL=... MINICODE_MODEL=... minicode")
 	fmt.Fprintln(w, "  MINICODE_API_KEY=... MINICODE_BASE_URL=... MINICODE_MODEL=... minicode \"your prompt\"")
 	fmt.Fprintln(w, "  echo 'your prompt' | MINICODE_API_KEY=... MINICODE_BASE_URL=... MINICODE_MODEL=... minicode")
 }

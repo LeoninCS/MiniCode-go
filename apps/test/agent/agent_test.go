@@ -50,7 +50,7 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 
 	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
 	output := &recordingOutput{}
-	if err := agent.Run(context.Background(), client, "run command", output); err != nil {
+	if err := newSession(t, client).Turn(context.Background(), "run command", output); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	// 展示层收到原始 Markdown 和工具输出,不混入 CLI 标签、换行或 ANSI 样式。
@@ -88,7 +88,7 @@ func TestRun_ReturnsProviderError(t *testing.T) {
 	defer srv.Close()
 	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
 	output := &recordingOutput{}
-	err := agent.Run(context.Background(), client, "hello", output)
+	err := newSession(t, client).Turn(context.Background(), "hello", output)
 	var apiErr *provider.APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("error = %v, want provider API error", err)
@@ -100,7 +100,7 @@ func TestRun_ReturnsProviderError(t *testing.T) {
 	t.Run("context cancellation", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if err := agent.Run(ctx, client, "hello", &recordingOutput{}); !errors.Is(err, context.Canceled) {
+		if err := newSession(t, client).Turn(ctx, "hello", &recordingOutput{}); !errors.Is(err, context.Canceled) {
 			t.Fatalf("error = %v, want context.Canceled", err)
 		}
 	})
@@ -138,7 +138,7 @@ func TestRun_TurnLimitSummaryFailure(t *testing.T) {
 			defer srv.Close()
 			client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
 			output := &recordingOutput{}
-			err := agent.Run(ctx, client, "run tests", output)
+			err := newSession(t, client).Turn(ctx, "run tests", output)
 			if err == nil || !strings.Contains(err.Error(), "maximum model turns (500)") || count.Load() != 501 {
 				t.Fatalf("error = %v, requests = %d", err, count.Load())
 			}
@@ -179,7 +179,7 @@ func TestRun_SystemPromptDeclaresWorkspaceAndToolRules(t *testing.T) {
 	defer srv.Close()
 
 	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
-	if err := agent.Run(context.Background(), client, "分析项目结构", &recordingOutput{}); err != nil {
+	if err := newSession(t, client).Turn(context.Background(), "分析项目结构", &recordingOutput{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -208,6 +208,68 @@ func TestRun_SystemPromptDeclaresWorkspaceAndToolRules(t *testing.T) {
 	if !strings.Contains(content, "500 轮") {
 		t.Errorf("system prompt does not state the turn limit: %s", content)
 	}
+}
+
+// TestSession_TurnsShareHistory 校验历史跨轮累积:
+// 第二轮请求必须带上第一轮的问答,否则模型记不住用户前面说过什么。
+func TestSession_TurnsShareHistory(t *testing.T) {
+	replies := []provider.Message{
+		provider.NewMessage(provider.RoleAssistant, "第一轮回答", ""),
+		provider.NewMessage(provider.RoleAssistant, "第二轮回答", ""),
+	}
+	requests := make(chan provider.ChatRequest, len(replies))
+	var count atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req provider.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		index := int(count.Add(1)) - 1
+		requests <- req
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: replies[index]}}})
+	}))
+	defer srv.Close()
+
+	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
+	session := newSession(t, client)
+	if err := session.Turn(context.Background(), "我叫什么", &recordingOutput{}); err != nil {
+		t.Fatalf("first turn: %v", err)
+	}
+	if err := session.Turn(context.Background(), "我是谁", &recordingOutput{}); err != nil {
+		t.Fatalf("second turn: %v", err)
+	}
+
+	first := <-requests
+	second := <-requests
+	if len(first.Messages) != 2 || first.Messages[1].Text() != "我叫什么" {
+		t.Fatalf("first request = %+v", first.Messages)
+	}
+	if !reflect.DeepEqual(second.Messages[0], first.Messages[0]) {
+		t.Fatal("system prompt was not kept at the head of the history")
+	}
+	want := []string{"我叫什么", "第一轮回答", "我是谁"}
+	if len(second.Messages) != len(want)+1 {
+		t.Fatalf("second request = %+v", second.Messages)
+	}
+	for i, text := range want {
+		if got := second.Messages[1+i].Text(); got != text {
+			t.Fatalf("second.Messages[%d] = %q, want %q", 1+i, got, text)
+		}
+	}
+}
+
+// newSession 打开一个会话并在用例结束时释放工作区,让用例只关心单轮行为。
+func newSession(t *testing.T, client *provider.Client) *agent.Session {
+	t.Helper()
+	session, err := agent.NewSession(client)
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	return session
 }
 
 type recordingOutput struct {

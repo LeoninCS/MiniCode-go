@@ -283,6 +283,137 @@ func TestMiniCode_Responses(t *testing.T) {
 	})
 }
 
+// TestMiniCode_InteractiveSession 覆盖交互循环:提示符、退出命令,
+// 以及"每轮独立、不累积历史"这一设计。
+func TestMiniCode_InteractiveSession(t *testing.T) {
+	binary := buildMiniCode(t)
+
+	t.Run("multiple rounds then /exit", func(t *testing.T) {
+		srv, requests := conversationServer(t,
+			provider.NewMessage(provider.RoleAssistant, "第一轮", ""),
+			provider.NewMessage(provider.RoleAssistant, "第二轮", ""),
+		)
+		stdout, stderr, exitCode := runMiniCodeSession(t, binary, srv.URL, "第一个问题\n第二个问题\n/exit\n")
+		if exitCode != 0 || stderr != "" {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
+		}
+		// 两轮任务加一次 /exit,提示符打印三次。
+		if got := strings.Count(stdout, promptMarker); got != 3 {
+			t.Fatalf("prompt count = %d, stdout = %q", got, stdout)
+		}
+		if !strings.Contains(stdout, "第一轮") || !strings.Contains(stdout, "第二轮") {
+			t.Fatalf("stdout = %q", stdout)
+		}
+		// 同一个循环共用一个会话,第二轮要带上第一轮的问答,模型才记得住前面说过什么。
+		first := readRequest(t, requests)
+		second := readRequest(t, requests)
+		if len(first.Messages) != 2 || first.Messages[0].Role != provider.RoleSystem {
+			t.Fatalf("first request = %+v", first.Messages)
+		}
+		if len(second.Messages) != 4 {
+			t.Fatalf("second request = %+v", second.Messages)
+		}
+		want := []string{"第一个问题", "第一轮", "第二个问题"}
+		if first.Messages[0].Role != provider.RoleSystem || second.Messages[0].Role != provider.RoleSystem {
+			t.Fatalf("system prompt was not sent every round")
+		}
+		for i, text := range want {
+			if got := second.Messages[1+i].Text(); got != text {
+				t.Fatalf("second.Messages[%d] = %q, want %q", 1+i, got, text)
+			}
+		}
+	})
+
+	t.Run("/quit exits the same way", func(t *testing.T) {
+		srv, _ := conversationServer(t, provider.NewMessage(provider.RoleAssistant, "回答", ""))
+		stdout, stderr, exitCode := runMiniCodeSession(t, binary, srv.URL, "一个问题\n/quit\n")
+		if exitCode != 0 || stderr != "" || !strings.Contains(stdout, "回答") {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
+		}
+		if got := strings.Count(stdout, promptMarker); got != 2 {
+			t.Fatalf("prompt count = %d, stdout = %q", got, stdout)
+		}
+	})
+
+	t.Run("eof without exit command", func(t *testing.T) {
+		srv, requests := conversationServer(t, provider.NewMessage(provider.RoleAssistant, "回答", ""))
+		stdout, stderr, exitCode := runMiniCodeSession(t, binary, srv.URL, "一个问题\n")
+		if exitCode != 0 || stderr != "" {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
+		}
+		readRequest(t, requests)
+	})
+
+	t.Run("empty lines are skipped", func(t *testing.T) {
+		// 没有任何回复可用,一旦空行被当成任务发出就会让服务端报错。
+		srv, _ := conversationServer(t)
+		stdout, stderr, exitCode := runMiniCodeSession(t, binary, srv.URL, "\n\n/exit\n")
+		if exitCode != 0 || stderr != "" {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
+		}
+		if got := strings.Count(stdout, promptMarker); got != 3 {
+			t.Fatalf("prompt count = %d, stdout = %q", got, stdout)
+		}
+	})
+
+	t.Run("empty stdin exits cleanly", func(t *testing.T) {
+		// 默认就是循环,没有输入时按 EOF 干净退出,不再报"no prompt provided"。
+		srv, _ := conversationServer(t)
+		stdout, stderr, exitCode := runMiniCodeSession(t, binary, srv.URL, "")
+		if exitCode != 0 || stderr != "" || stdout != promptMarker+"\n" {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
+		}
+	})
+
+	t.Run("prompt argument seeds the first round", func(t *testing.T) {
+		// 位置参数只是循环的第一行输入,跑完仍然回到提示符等下一轮。
+		srv, requests := conversationServer(t,
+			provider.NewMessage(provider.RoleAssistant, "回答", ""),
+			provider.NewMessage(provider.RoleAssistant, "再答", ""),
+		)
+		_, stderr, _ := runMiniCodeRaw(t, binary, srv.URL, "命令行任务", "第二个任务\n")
+		if stderr != "" {
+			t.Fatalf("stderr = %q", stderr)
+		}
+		first := readRequest(t, requests)
+		second := readRequest(t, requests)
+		if first.Messages[1].Text() != "命令行任务" {
+			t.Fatalf("first request = %+v", first.Messages)
+		}
+		// 第二轮请求带着上一轮的历史,新输入排在最后。
+		if len(second.Messages) != 4 || second.Messages[3].Text() != "第二个任务" {
+			t.Fatalf("second request = %+v", second.Messages)
+		}
+	})
+
+	t.Run("failed round keeps the session", func(t *testing.T) {
+		var count atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if count.Add(1) == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = io.WriteString(w, `{"error":{"code":"invalid_api_key","message":"bad key"}}`)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{
+				{Message: provider.NewMessage(provider.RoleAssistant, "恢复了", "")},
+			}})
+		}))
+		defer srv.Close()
+
+		stdout, stderr, exitCode := runMiniCodeSession(t, binary, srv.URL, "第一个问题\n第二个问题\n/exit\n")
+		// 第一轮 401、第二轮恢复,会话继续到 /exit;但有轮次失败,退出码仍是 1,
+		// 这样 `echo "任务" | minicode` 依然能反映任务成败。
+		if exitCode != 1 || !strings.Contains(stderr, "invalid_api_key") || !strings.Contains(stdout, "恢复了") {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
+		}
+	})
+}
+
+// promptMarker 与 CLI 里的交互提示符保持一致。
+const promptMarker = "> "
+
 func buildMiniCode(t *testing.T) string {
 	t.Helper()
 	workingDir, err := os.Getwd()
@@ -299,13 +430,18 @@ func buildMiniCode(t *testing.T) string {
 	return binary
 }
 
-func runMiniCode(t *testing.T, binary, baseURL string, flags ...string) (string, string, int) {
+// runMiniCodeRaw 启动 minicode 并原样返回输出。
+// prompt 非空时作为位置参数(即循环的第一轮输入),stdin 提供之后读到的内容。
+func runMiniCodeRaw(t *testing.T, binary, baseURL, prompt, stdin string, flags ...string) (string, string, int) {
 	t.Helper()
 	args := []string{"-api-key", "test-key", "-base-url", baseURL, "-model", "test-model"}
 	args = append(args, flags...)
-	args = append(args, "run tests")
+	if prompt != "" {
+		args = append(args, prompt)
+	}
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = t.TempDir()
+	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -318,6 +454,24 @@ func runMiniCode(t *testing.T, binary, baseURL string, flags ...string) (string,
 		t.Fatalf("run minicode: %v", err)
 	}
 	return stdout.String(), stderr.String(), exitErr.ExitCode()
+}
+
+// runMiniCode 跑一轮任务并剥掉交互循环的提示符。
+// 位置参数作为第一轮输入、stdin 为空,所以 stdout 形如 "> " + 本轮输出 + "> \n"。
+// 提示符属于 CLI 装饰,这些用例关注 Agent 行为,统一在这里剥掉;
+// 提示符本身由 TestMiniCode_InteractiveSession 覆盖。
+func runMiniCode(t *testing.T, binary, baseURL string, flags ...string) (string, string, int) {
+	t.Helper()
+	stdout, stderr, code := runMiniCodeRaw(t, binary, baseURL, "run tests", "", flags...)
+	stdout = strings.TrimPrefix(strings.TrimSuffix(stdout, promptMarker+"\n"), promptMarker)
+	return stdout, stderr, code
+}
+
+// runMiniCodeSession 不传位置参数启动 minicode,stdin 提供多行输入。
+// 默认行为就是交互循环,所以这里不需要任何额外开关,输出原样返回。
+func runMiniCodeSession(t *testing.T, binary, baseURL, stdin string, flags ...string) (string, string, int) {
+	t.Helper()
+	return runMiniCodeRaw(t, binary, baseURL, "", stdin, flags...)
 }
 
 // assertBuiltinSchemas 校验首次请求带上四个内置工具,名称、顺序和关键参数类型都要正确。
