@@ -36,11 +36,11 @@ type Client struct {
 }
 
 // NewClient 基于 Config 构造一个 Client。
-// 缺省的 HTTPClient 会被设为 60 秒超时,
+// 缺省的 HTTPClient 会被设为 1 小时超时,
 // 以保证在用户没有显式注入时仍能稳定取消请求。
 func NewClient(cfg Config) *Client {
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: 60 * time.Second}
+		cfg.HTTPClient = &http.Client{Timeout: time.Hour}
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	return &Client{cfg: cfg, http: cfg.HTTPClient}

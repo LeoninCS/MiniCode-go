@@ -41,7 +41,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		apiKey  = fs.String("api-key", "", "模型服务 API Key(覆盖 MINICODE_API_KEY)")
 		baseURL = fs.String("base-url", "", "模型服务 Base URL,例如 https://api.openai.com/v1(覆盖 MINICODE_BASE_URL)")
 		model   = fs.String("model", "", "模型名(覆盖 MINICODE_MODEL)")
-		timeout = fs.Duration("timeout", 60*time.Second, "单轮任务的超时时间(含模型请求和命令执行)")
+		timeout = fs.Duration("timeout", time.Hour, "单轮任务的超时时间(含模型请求和命令执行)")
 	)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
