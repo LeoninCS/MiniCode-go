@@ -79,14 +79,14 @@ func TestMiniCode_Responses(t *testing.T) {
 			}
 			readRequest(t, requests)
 			req := readRequest(t, requests)
-			if len(req.Messages) != 3 {
+			if len(req.Messages) != 4 {
 				t.Fatalf("messages = %+v", req.Messages)
 			}
-			message := req.Messages[1]
+			message := req.Messages[2]
 			if message.Role != provider.RoleAssistant || len(message.ToolCalls) != 1 || message.ToolCalls[0] != call || message.Text() != assistant.Text() || (message.Content == nil) != (tc.content == nil) {
 				t.Fatalf("assistant message was not preserved: %+v", message)
 			}
-			result := req.Messages[2]
+			result := req.Messages[3]
 			if result.Role != provider.RoleTool || result.ToolCallID != call.ID || result.Text() != "shell-result\n" {
 				t.Fatalf("tool result = %+v", result)
 			}
@@ -108,14 +108,14 @@ func TestMiniCode_Responses(t *testing.T) {
 		}
 		readRequest(t, requests)
 		middle := readRequest(t, requests)
-		if len(middle.Messages) != 4 {
+		if len(middle.Messages) != 5 {
 			t.Fatalf("expected both tool results before next request, got %+v", middle.Messages)
 		}
 		last := readRequest(t, requests)
-		if len(last.Messages) != 6 {
+		if len(last.Messages) != 7 {
 			t.Fatalf("messages = %+v", last.Messages)
 		}
-		for i, index := range []int{2, 3, 5} {
+		for i, index := range []int{3, 4, 6} {
 			want := []string{"first", "second", "third"}[i]
 			result := last.Messages[index]
 			if result.Role != provider.RoleTool || result.ToolCallID != want || result.Text() != want {
@@ -149,7 +149,7 @@ func TestMiniCode_Responses(t *testing.T) {
 			}
 			readRequest(t, requests)
 			req := readRequest(t, requests)
-			if len(req.Messages) != 3 || req.Messages[2].ToolCallID != call.ID || !strings.Contains(req.Messages[2].Text(), tc.wantError) {
+			if len(req.Messages) != 4 || req.Messages[3].ToolCallID != call.ID || !strings.Contains(req.Messages[3].Text(), tc.wantError) {
 				t.Fatalf("error was not returned to model: %+v", req.Messages)
 			}
 		})
@@ -199,11 +199,11 @@ func TestMiniCode_Responses(t *testing.T) {
 				readRequest(t, requests)
 			}
 			request := readRequest(t, requests)
-			if len(request.Tools) != 0 || len(request.Messages) != 1002 {
+			if len(request.Tools) != 0 || len(request.Messages) != 1003 {
 				t.Fatalf("summary request = %+v", request)
 			}
-			lastResult := request.Messages[1000]
-			instruction := request.Messages[1001]
+			lastResult := request.Messages[1001]
+			instruction := request.Messages[1002]
 			if lastResult.Role != provider.RoleTool || lastResult.ToolCallID != call.ID || instruction.Role != provider.RoleSystem || !strings.Contains(instruction.Text(), "停止调用工具") {
 				t.Fatalf("incomplete summary history: %+v", request.Messages)
 			}

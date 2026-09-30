@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/MiniCode-go/minicode/internal/provider"
@@ -30,9 +31,14 @@ type Output interface {
 
 // Run 执行一次任务,直到模型给出最终回复、达到轮数上限或发生不可恢复错误。
 // 调用方负责设置 ctx 的超时和取消,并提供 Output 实现。
-// 文件工具以进程当前工作目录为工作区,任务结束时释放。
+// 工作区取进程当前工作目录,系统 Prompt 会向模型声明该路径;任务结束时释放工作区句柄。
 func Run(ctx context.Context, client *provider.Client, prompt string, output Output) error {
-	files, err := tools.NewFileTools(".")
+	// 只解析一次绝对路径:系统 Prompt 要声明工作区,文件工具也不再依赖运行期间的工作目录。
+	workspace, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve workspace: %w", err)
+	}
+	files, err := tools.NewFileTools(workspace)
 	if err != nil {
 		return err
 	}
@@ -45,7 +51,10 @@ func Run(ctx context.Context, client *provider.Client, prompt string, output Out
 	if err != nil {
 		return err
 	}
-	messages := []provider.Message{provider.NewMessage(provider.RoleUser, prompt, "")}
+	messages := []provider.Message{
+		provider.NewMessage(provider.RoleSystem, systemPrompt(workspace), ""),
+		provider.NewMessage(provider.RoleUser, prompt, ""),
+	}
 	toolDefinitions := registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
 		resp, err := client.Chat(ctx, provider.ChatRequest{

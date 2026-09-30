@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -68,10 +69,10 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 	}
 	<-requests
 	next := <-requests
-	if len(next.Messages) != 3 || !reflect.DeepEqual(next.Messages[1], assistant) {
+	if len(next.Messages) != 4 || !reflect.DeepEqual(next.Messages[2], assistant) {
 		t.Fatalf("messages = %+v", next.Messages)
 	}
-	result := next.Messages[2]
+	result := next.Messages[3]
 	wantResult := "**raw-output**\nerror: " + output.toolErrors[0].Error()
 	if result.Role != provider.RoleTool || result.ToolCallID != call.ID || result.Text() != wantResult {
 		t.Fatalf("tool result = %+v", result)
@@ -155,6 +156,57 @@ func TestRun_TurnLimitSummaryFailure(t *testing.T) {
 				t.Fatalf("missing fallback content: %q", output.events)
 			}
 		})
+	}
+}
+
+func TestRun_SystemPromptDeclaresWorkspaceAndToolRules(t *testing.T) {
+	workspace, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	requests := make(chan provider.ChatRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req provider.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		requests <- req
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "done", "")}}})
+	}))
+	defer srv.Close()
+
+	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
+	if err := agent.Run(context.Background(), client, "分析项目结构", &recordingOutput{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	req := <-requests
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	system := req.Messages[0]
+	if system.Role != provider.RoleSystem {
+		t.Fatalf("first message role = %q, want system", system.Role)
+	}
+	if user := req.Messages[1]; user.Role != provider.RoleUser || user.Text() != "分析项目结构" {
+		t.Fatalf("user message = %+v", user)
+	}
+	// 工具规则要覆盖实际注册的四个工具,否则模型会漏用可用工具或尝试不存在的工具。
+	content := system.Text()
+	for _, name := range []string{"read", "write", "edit", "bash"} {
+		if !strings.Contains(content, name) {
+			t.Errorf("system prompt does not mention tool %q", name)
+		}
+	}
+	if !strings.Contains(content, workspace) {
+		t.Errorf("system prompt does not declare workspace %q", workspace)
+	}
+	// 轮数上限由宿主强制,Prompt 里的数值必须和 maxTurns 保持一致。
+	if !strings.Contains(content, "500 轮") {
+		t.Errorf("system prompt does not state the turn limit: %s", content)
 	}
 }
 
