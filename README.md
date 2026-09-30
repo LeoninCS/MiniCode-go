@@ -20,17 +20,33 @@ MiniCode-go 是一个使用 Go 从零实现的、以 CLI 为主要交互入口�
 - ✅ Day 1：协议结构体 + 单次非流式模型调用；
 - ✅ Day 2：工具 Schema 定义 + 工具调用响应解析；
 - ✅ Day 3：Agent Loop；
-- 🔄 Day 4：已接入 `bash` / `read` / `write` / `edit` 四个工具与工具注册表；
-- ⬜ Day 5：系统 Prompt + CLI 输入循环；
-- ⬜ Day 6：输出截断、轮数上限和执行前确认；
+- ✅ Day 4：`bash` / `read` / `write` / `edit` 四个工具与工具注册表；
+- ✅ Day 5：系统 Prompt + 默认 CLI 输入循环 + 会话内跨轮记忆；
+- 🔄 Day 6：已完成输出截断、500 轮上限和单轮超时，执行前确认待实现；
 - ⬜ Day 7：token 统计和过程可视化；
-- ⬜ Day 8：Ctrl+C 中断与 context 取消；
-- ⬜ Day 9：Session 持久化与恢复；
+- ✅ Day 8：Ctrl+C / SIGTERM 中断与 context 取消；
+- ⬜ Day 9：Session 持久化与恢复（当前仅进程内跨轮记忆）；
 - ⬜ Day 10：Provider 抽象层；
 - ⬜ Day 11：SSE 流式解析；
 - ⬜ Day 12：tool_calls 参数分片累积与打字机输出；
 - ⬜ Day 13：上下文压缩触发与摘要；
 - ⬜ Day 14：压缩切分点合法性处理。
+
+## 最近更新
+
+### 2026-09-30
+
+- 默认进入交互循环，位置参数作为第一轮任务，之后可继续从标准输入接收任务；
+- 同一进程内复用 Session，系统 Prompt、用户消息、模型回复和工具结果会跨轮保留；
+- 增加 MiniCode 系统 Prompt，明确工作区边界、工具契约、执行策略和回复规范；
+- 支持 `/exit`、`/quit` 或输入 EOF 结束会话，空行不会发送给模型；
+- CLI 单轮任务和默认 HTTP 客户端的超时时间由 60 秒延长为 1 小时。
+
+### 2026-09-29
+
+- Agent Loop 最大模型轮数调整为 500，达到上限后停止工具调用并请求最终总结；
+- 接入 `read`、`write`、`edit` 文件工具，并将四个内置工具统一迁移到工具注册表；
+- `edit` 支持 `replace_all`，文件编辑继续执行“先读后改”和外部改动检测。
 
 ## 项目文档
 
@@ -54,8 +70,10 @@ MiniCode-go/
     ├── cmd/minicode/                  # CLI 参数、输入与展示
     │   ├── main.go
     │   └── output.go
-    ├── internal/agent/                 # 模型循环与消息历史
-    │   └── agent.go
+    ├── internal/agent/                 # Session、模型循环、消息历史与系统 Prompt
+    │   ├── session.go                  # 交互会话与 Agent Loop
+    │   ├── prompt.go                   # 系统 Prompt
+    │   └── output.go                   # Agent 输出接口
     ├── internal/terminal/markdown.go  # 终端检测与 Markdown 渲染
     ├── internal/tools/                 # 工具实现 + 注册机制
     │   ├── registry.go                # Tool、ToolRegistry、参数公共校验
@@ -88,7 +106,7 @@ MiniCode-go/
   风格,只测导出 API,源码目录保持干净。
 - 构建/测试命令:`go -C apps build ./...` / `go -C apps test -count=1 ./...`。
 
-## 构建与运行（Day 3）
+## 构建与运行
 
 ```bash
 # 构建
@@ -100,17 +118,24 @@ cp .env.example .env && $EDITOR .env && source .env   # 一次配置,反复使�
 ```
 
 ```bash
-# 运行：使用任意 OpenAI 兼容服务(DeepSeek / MiniMax / OpenAI / Moonshot 等)
+# 交互模式：每行提交一轮任务，历史在当前会话内持续保留
+./bin/minicode
+
+# 位置参数作为第一轮任务，完成后仍可继续交互
 ./bin/minicode "用一句话介绍 Go 的 goroutine"
 
-# 或者通过 stdin 传入多行输入
-echo "用一句话介绍 Go 的 goroutine" | ./bin/minicode
+# 也可通过 stdin 批量输入；EOF 后退出
+printf '分析这个项目\n运行测试\n' | ./bin/minicode
 
-# 也可以完全用 flag 覆盖(flag 优先级最高)
+# /exit 和 /quit 均可结束交互会话
+
+# 也可以完全用 flag 覆盖配置（flag 优先级最高）
 ./bin/minicode -api-key sk-... -base-url https://api.example.com/v1 -model x "..."
 ```
 
 完整配置项与示例值见仓库根 [`.env.example`](.env.example)。`.env` 不进 git,放本地。
+
+每个 Session 启动时会注入系统 Prompt，其中包含当前工作区、文件路径边界、工具说明、先读后改、修改后验证等规则。同一进程中的用户消息、模型回复、工具调用和工具结果会持续累积，因此后续问题可以引用前面的内容；会话尚不会保存到磁盘，退出程序后不能恢复。
 
 终端中的模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具调用信息和命令输出继续原样显示。
 
@@ -133,4 +158,4 @@ go -C apps run ./cmd/minicode "请调用 bash 执行 date -u; date，然后说�
 go -C apps test -count=1 ./test/...
 ```
 
-当前采用直接执行模式；交互确认、流式输出和上下文压缩仍在后续计划中。工具的组织方式与注册表机制见 [`docs/tools.md`](docs/tools.md)。
+当前采用直接执行模式；交互确认、会话持久化、流式输出和上下文压缩仍在后续计划中。工具的组织方式与注册表机制见 [`docs/tools.md`](docs/tools.md)。
