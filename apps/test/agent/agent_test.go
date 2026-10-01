@@ -49,7 +49,7 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 	defer srv.Close()
 
 	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
-	output := &recordingOutput{}
+	output := &runningRecordingOutput{}
 	if err := newSession(t, client).Turn(context.Background(), "run command", output); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 	if output.String() != "**raw-output**" {
 		t.Fatalf("tool output = %q", output.String())
 	}
-	wantEvents := []string{"message:**正在执行**", "call:call_1", "result:**raw-output**", "tool-error", "message:# 已收到错误"}
+	wantEvents := []string{"begin-running", "message:**正在执行**", "call:call_1", "result:**raw-output**", "tool-error", "clear-running", "message:# 已收到错误"}
 	if !reflect.DeepEqual(output.events, wantEvents) {
 		t.Fatalf("events = %q, want %q", output.events, wantEvents)
 	}
@@ -293,4 +293,17 @@ func (o *recordingOutput) ToolResult(result string) {
 func (o *recordingOutput) ToolError(err error) {
 	o.events = append(o.events, "tool-error")
 	o.toolErrors = append(o.toolErrors, err)
+}
+
+// runningRecordingOutput 验证支持生命周期接口的展示层会在最终回答前收到清理通知。
+type runningRecordingOutput struct {
+	recordingOutput
+}
+
+func (o *runningRecordingOutput) BeginRunning() {
+	o.events = append(o.events, "begin-running")
+}
+
+func (o *runningRecordingOutput) ClearRunning() {
+	o.events = append(o.events, "clear-running")
 }

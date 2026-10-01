@@ -126,6 +126,9 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 // 工具失败会作为结果回传给模型,任务被取消时丢弃未配对的半轮消息。
 func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 	s.messages = append(s.messages, provider.NewMessage(provider.RoleUser, input, ""))
+	if running, ok := output.(RunningOutput); ok {
+		running.BeginRunning()
+	}
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
 		resp, err := s.client.Chat(ctx, provider.ChatRequest{
@@ -144,6 +147,11 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 			return errors.New("empty response from model")
 		}
 		if content != "" {
+			// 带工具调用的 content 属于运行过程，暂时展示；只有不再调用工具的
+			// content 才是最终回答，此时先清掉本轮全部临时输出。
+			if len(toolCalls) == 0 {
+				clearRunning(output)
+			}
 			output.Message(content)
 		}
 		// assistant 消息无论是否带工具调用都要进历史,否则下一轮模型看不到自己刚说过什么。
@@ -170,12 +178,20 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 		}
 	}
 	content, err := summarizeAtTurnLimit(ctx, s.client, s.messages)
+	clearRunning(output)
 	if err != nil {
 		output.Message(fmt.Sprintf("已达到最大执行轮数（%d），本次任务已停止，未能生成最终总结。请结合上方工具输出确认已完成的工作。", maxTurns))
 		return fmt.Errorf("reached maximum model turns (%d); summarize: %w", maxTurns, err)
 	}
 	output.Message(content)
 	return fmt.Errorf("reached maximum model turns (%d)", maxTurns)
+}
+
+// clearRunning 通知支持终端游标控制的展示层清除当前轮次的临时输出。
+func clearRunning(output Output) {
+	if running, ok := output.(RunningOutput); ok {
+		running.ClearRunning()
+	}
 }
 
 // Close 释放工作区句柄。

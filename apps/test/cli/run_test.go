@@ -1,4 +1,4 @@
-package minicode_test
+package cli_test
 
 import (
 	"bytes"
@@ -420,7 +420,7 @@ func buildMiniCode(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("get working directory: %v", err)
 	}
-	moduleRoot := filepath.Clean(filepath.Join(workingDir, "..", "..", ".."))
+	moduleRoot := filepath.Clean(filepath.Join(workingDir, "..", ".."))
 	binary := filepath.Join(t.TempDir(), "minicode")
 	cmd := exec.Command("go", "build", "-o", binary, "./cmd/minicode")
 	cmd.Dir = moduleRoot

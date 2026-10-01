@@ -1,5 +1,5 @@
-// Package terminal 提供终端检测与 Markdown 渲染。
-package terminal
+// Package cli 提供 MiniCode 命令行界面的输出与终端展示能力。
+package cli
 
 import (
 	"io"
