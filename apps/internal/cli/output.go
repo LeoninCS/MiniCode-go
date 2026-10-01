@@ -25,22 +25,23 @@ func NewOutput(stdout, stderr io.Writer, interactive bool) *Output {
 	return &Output{stdout: stdout, stderr: stderr, interactive: interactive}
 }
 
-// BeginRunning 保存本轮运行输出的起始位置。最终回答到达时会回到这里清理临时输出。
+// BeginRunning 进入终端备用屏幕展示本轮运行过程。最终回答到达时会恢复原屏幕。
 func (o *Output) BeginRunning() {
-	if !o.interactive {
+	if !o.interactive || o.running {
 		return
 	}
-	fmt.Fprint(o.stdout, "\x1b[s")
+	// 备用屏幕不会把工具输出写入主屏幕的 scrollback。相比保存/恢复游标，
+	// 即使工具输出超过终端高度并触发滚屏，退出后也不会残留中间步骤。
+	fmt.Fprint(o.stdout, "\x1b[?1049h")
 	o.running = true
 }
 
-// ClearRunning 删除本轮工具调用和实时输出，但不会影响起始位置之前的历史回答。
+// ClearRunning 离开备用屏幕并恢复本轮开始前的终端内容。
 func (o *Output) ClearRunning() {
 	if !o.interactive || !o.running {
 		return
 	}
-	// 恢复保存的游标并清除到屏幕末尾，让最终回答紧接在上一轮内容下面。
-	fmt.Fprint(o.stdout, "\x1b[u\x1b[J")
+	fmt.Fprint(o.stdout, "\x1b[?1049l")
 	o.running = false
 }
 

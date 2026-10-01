@@ -18,7 +18,7 @@ type Output interface {
 }
 
 // RunningOutput 是终端展示层可选实现的生命周期接口。
-// BeginRunning 记录本轮临时输出的起点，ClearRunning 在最终回答前删除这些输出。
+// BeginRunning 隔离本轮临时输出，ClearRunning 在最终回答前恢复原有终端内容。
 // 非交互宿主无需实现，Agent 会继续保留完整输出。
 type RunningOutput interface {
 	BeginRunning()

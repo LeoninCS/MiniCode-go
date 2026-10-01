@@ -17,7 +17,7 @@ func TestOutputRunningOutput(t *testing.T) {
 		output.ClearRunning()
 		output.Message("final answer")
 
-		want := "\x1b[stool output\n\x1b[u\x1b[Jfinal answer\n"
+		want := "\x1b[?1049htool output\n\x1b[?1049lfinal answer\n"
 		if got := stdout.String(); got != want {
 			t.Fatalf("stdout = %q, want %q", got, want)
 		}
@@ -45,7 +45,7 @@ func TestOutputRunningOutput(t *testing.T) {
 		output.ClearRunning()
 		output.ClearRunning()
 
-		if got, want := stdout.String(), "\x1b[s\x1b[u\x1b[J"; got != want {
+		if got, want := stdout.String(), "\x1b[?1049h\x1b[?1049l"; got != want {
 			t.Fatalf("stdout = %q, want %q", got, want)
 		}
 	})

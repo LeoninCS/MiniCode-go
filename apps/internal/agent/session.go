@@ -2,7 +2,6 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -66,39 +65,60 @@ func NewSession(client *provider.Client) (*Session, error) {
 	}, nil
 }
 
+// Input 负责读取一条完整的用户输入。终端实现可以提供光标编辑、历史和多行输入，
+// 管道实现则继续逐行读取。prompt 是本次读取应展示的提示符。
+type Input interface {
+	Readline(prompt string) (string, error)
+	Close() error
+}
+
 // Run 逐轮读取输入并驱动会话,直到遇到退出命令或输入结束,返回进程退出码。
 //
-// output 决定每一轮怎么展示,prompt 接收每轮的提示符;错误一律经 output.ToolError 报给宿主。
-// initial 是命令行位置参数,当作循环的第一轮输入,便于直接开工第一轮;为空时只从 stdin 读。
+// output 决定每一轮怎么展示,input 负责读取用户输入。
+// initial 是命令行位置参数,当作循环的第一轮输入,便于直接开工第一轮;为空时从 input 读。
 // 超时按轮计算:一轮卡住不影响继续下一轮。
 // 某轮失败不影响继续下一轮;只要有任何一轮失败,退出码就是 1,
 // 这样 `echo "任务" | minicode` 仍然能反映任务成败。
-func (s *Session) Run(ctx context.Context, output Output, initial []string, timeout time.Duration, stdin io.Reader, prompt io.Writer) int {
-	// 输入在后台读取,主循环才能同时等待用户输入和 ctx 取消。
-	// 取消粒度细化成"只停当前一轮,会话继续"留到后续实现。
-	lines := make(chan string)
-	done := make(chan error, 1)
-	go readLines(strings.Join(initial, " "), stdin, lines, done)
+func (s *Session) Run(ctx context.Context, output Output, initial []string, timeout time.Duration, input Input) int {
+	// 输入在后台读取,主循环才能同时等待根 context 取消。
+	// readline 结果使用单元素缓冲，防止 context 与输入同时就绪时读取 goroutine 泄漏。
+	type inputResult struct {
+		line string
+		err  error
+	}
+	results := make(chan inputResult, 1)
+	read := func() {
+		line, err := input.Readline(promptMarker)
+		results <- inputResult{line: line, err: err}
+	}
 
 	failed := false
+	pendingInitial := strings.Join(initial, " ")
 	for {
-		fmt.Fprint(prompt, promptMarker)
+		if pendingInitial != "" {
+			results <- inputResult{line: pendingInitial}
+			pendingInitial = ""
+		} else {
+			go read()
+		}
+
 		select {
 		case <-ctx.Done():
-			fmt.Fprintln(prompt)
+			_ = input.Close()
 			output.ToolError(ctx.Err())
 			return 1
-		case err := <-done:
-			fmt.Fprintln(prompt)
-			if err != nil {
-				output.ToolError(err)
+		case result := <-results:
+			if result.err != nil {
+				if errors.Is(result.err, io.EOF) {
+					if failed {
+						return 1
+					}
+					return 0
+				}
+				output.ToolError(result.err)
 				return 1
 			}
-			if failed {
-				return 1
-			}
-			return 0
-		case line := <-lines:
+			line := result.line
 			switch strings.TrimSpace(line) {
 			case exitCommand, quitCommand:
 				if failed {
@@ -115,6 +135,11 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 				output.ToolError(err)
 				failed = true
 			}
+			// 整个会话已取消时直接退出，不再启动下一轮输入 goroutine，
+			// 避免它与 Close 竞争，在进程退出前重新进入终端 raw 模式。
+			if ctx.Err() != nil {
+				return 1
+			}
 		}
 	}
 }
@@ -126,8 +151,23 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 // 工具失败会作为结果回传给模型,任务被取消时丢弃未配对的半轮消息。
 func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 	s.messages = append(s.messages, provider.NewMessage(provider.RoleUser, input, ""))
-	if running, ok := output.(RunningOutput); ok {
-		running.BeginRunning()
+	runningOutput, hasRunningOutput := output.(RunningOutput)
+	runningActive := false
+	if hasRunningOutput {
+		runningOutput.BeginRunning()
+		runningActive = true
+	}
+	// 模型请求失败、任务超时或用户取消时也必须恢复终端，不能把用户留在备用屏幕。
+	defer func() {
+		if runningActive {
+			runningOutput.ClearRunning()
+		}
+	}()
+	clearRunning := func() {
+		if runningActive {
+			runningOutput.ClearRunning()
+			runningActive = false
+		}
 	}
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
@@ -150,7 +190,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 			// 带工具调用的 content 属于运行过程，暂时展示；只有不再调用工具的
 			// content 才是最终回答，此时先清掉本轮全部临时输出。
 			if len(toolCalls) == 0 {
-				clearRunning(output)
+				clearRunning()
 			}
 			output.Message(content)
 		}
@@ -178,7 +218,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 		}
 	}
 	content, err := summarizeAtTurnLimit(ctx, s.client, s.messages)
-	clearRunning(output)
+	clearRunning()
 	if err != nil {
 		output.Message(fmt.Sprintf("已达到最大执行轮数（%d），本次任务已停止，未能生成最终总结。请结合上方工具输出确认已完成的工作。", maxTurns))
 		return fmt.Errorf("reached maximum model turns (%d); summarize: %w", maxTurns, err)
@@ -187,33 +227,9 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 	return fmt.Errorf("reached maximum model turns (%d)", maxTurns)
 }
 
-// clearRunning 通知支持终端游标控制的展示层清除当前轮次的临时输出。
-func clearRunning(output Output) {
-	if running, ok := output.(RunningOutput); ok {
-		running.ClearRunning()
-	}
-}
-
 // Close 释放工作区句柄。
 func (s *Session) Close() error {
 	return s.files.Close()
-}
-
-// readLines 先送出命令行位置参数作为第一轮输入,再逐行读取 stdin;
-// 读完或出错时通过 done 报告,err 为 nil 表示正常 EOF。
-//
-// lines 不带缓冲:参数必须被主循环取走之后才会继续读 stdin,
-// 否则参数和 EOF 同时就绪时 select 会随机挑一个,导致第一轮偶尔不执行。
-func readLines(initial string, stdin io.Reader, lines chan<- string, done chan<- error) {
-	if initial != "" {
-		lines <- initial
-	}
-	scanner := bufio.NewScanner(stdin)
-	scanner.Buffer(make([]byte, 1024), 1<<20)
-	for scanner.Scan() {
-		lines <- scanner.Text()
-	}
-	done <- scanner.Err()
 }
 
 // summarizeAtTurnLimit 在完整工具结果之后请求一次总结,不再提供或执行工具。

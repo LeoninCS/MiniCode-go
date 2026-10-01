@@ -57,7 +57,19 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	output := NewOutput(stdout, stderr, IsTerminal(stdout))
+	interactive := IsTerminal(stdin) && IsTerminal(stdout)
+	output := NewOutput(stdout, stderr, interactive)
+	input, err := NewInput(stdin, stdout, stderr, interactive)
+	if err != nil {
+		fmt.Fprintln(stderr, "minicode: "+err.Error())
+		return 1
+	}
+	defer func() {
+		if err := input.Close(); err != nil {
+			fmt.Fprintln(stderr, "minicode: "+err.Error())
+		}
+	}()
+
 	session, err := agent.NewSession(client)
 	if err != nil {
 		fmt.Fprintln(stderr, "minicode: "+err.Error())
@@ -69,8 +81,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}()
 
-	// 位置参数当作循环的第一行输入,之后继续读 stdin;什么都不传就只读 stdin。
-	return session.Run(ctx, output, fs.Args(), *timeout, stdin, stdout)
+	// 位置参数作为第一轮输入，之后继续从终端编辑器或管道读取。
+	return session.Run(ctx, output, fs.Args(), *timeout, input)
 }
 
 // loadConfig 把 flag 显式传入的值与对应环境变量合并;
