@@ -55,7 +55,7 @@ apps/                                # Go module 根(不是仓库根)
 2. `go -C apps vet ./...` → 0 告警
 3. `go -C apps test -count=1 ./...` → 全过
 4. 端到端 smoke:mock OpenAI 端点,跑 happy + 401
-5. `docs/plan.md` + `README.md` 该 Day 改 ✅
+5. 文档只在用户明确要求时更新(见 `AGENTS.md`);未获授权不要主动改 `docs/` 和 `README.md`
 6. `git status` 复核
 
 ## 5. 决策记录
@@ -99,5 +99,6 @@ apps/                                # Go module 根(不是仓库根)
 3. httptest handler 阻塞 `r.Context().Done()` 不会在客户端断开时立即返回,必须加 server-side 兜底超时
 4. OpenAI 错误嵌套在 `error` 字段下,只用平铺解析会退化成原始 body
 5. 用户偏好:微信端纯文本;commit 用 `conventional + 中文 subject`;能查文件/plan/spec 就查,不替用户瞎猜
+6. 交互循环已在后台 goroutine 里独占读取 stdin(`agent.Session.Run` 的 `readLines`);Day 6 的执行前确认若再读一次 stdin 会抢输入。要么让后台 reader 广播给确认通道,要么确认固定走 `/dev/tty`。管道模式没有 TTY,必须定义降级策略(默认拒绝或加 `--yes` 自动放行)
 
 任何与本规范冲突的改动,先改本文件,再改实现。
