@@ -121,7 +121,18 @@ minicode
 > /exit
 ```
 
-输入 `/exit`、`/quit` 或发送 EOF 即可退出。交互终端支持左右方向键、Home/End、退格与 Delete 编辑，以及上下方向键浏览本次运行中的输入历史；按 `Shift+Enter` 或 `Ctrl+J` 可在当前位置插入换行，按 `Enter` 提交整段内容。部分传统终端无法区分 `Shift+Enter` 与 `Enter`，此时请使用 `Ctrl+J`。通过管道输入时仍按行提交。当前版本不会在启动时询问模型配置，如果缺少配置会给出提示并退出。
+交互终端支持多行编辑、自动折行，以及内容超出窗口时随光标滚动：
+
+| 操作 | 行为 |
+| --- | --- |
+| `Enter` | 提交整段输入 |
+| `Shift+Enter` / `Ctrl+J` | 在光标处插入真实换行 |
+| `↑` / `↓` | 在当前输入的显示行之间移动光标，到首末行停止，不翻历史记录 |
+| `←` / `→`、`Home` / `End` | 左右移动，或移到当前逻辑行的开头 / 末尾 |
+| `Backspace` / `Delete` | 删除字符；删除换行符时合并相邻行 |
+| `Ctrl+C` | 退出整个会话；运行中同时取消模型请求或工具执行 |
+
+输入 `/exit`、`/quit` 或发送 EOF 也可退出。部分传统终端无法区分 `Shift+Enter` 与 `Enter`，此时请使用 `Ctrl+J`。通过管道输入时仍按行提交。当前版本不会在启动时询问模型配置，如果缺少配置会给出提示并退出。
 
 ## 开发进度
 
@@ -142,6 +153,14 @@ minicode
 - ⬜ Day 14：压缩切分点合法性处理。
 
 ## 最近更新
+
+### 2026-10-02
+
+- CLI 参数、输入、终端展示和 Markdown 渲染集中到 `apps/internal/cli/`，`cmd/minicode/main.go` 只保留启动入口；
+- 支持真实多行输入、自动折行、上下光标移动和滚动显示；上下键不再浏览历史记录；
+- 修复扩展键盘协议下 Ctrl+C 无效的问题，键盘协议只在编辑输入时启用；取消运行中的任务后直接退出，避免再次打开输入框；
+- 运行过程使用终端备用屏幕，最终回答、失败或取消时恢复主屏幕，避免中间输出污染对话记录；
+- 补充输入编辑、终端显示和 Ctrl+C 退出回归测试。实现与验证总结见 [`docs/cli.md`](docs/cli.md)。
 
 ### 2026-10-01
 
@@ -168,6 +187,7 @@ minicode
 - [`docs/plan.md`](docs/plan.md)：按天拆分的开发任务和完成状态；
 - [`docs/agent.md`](docs/agent.md)：Agent 操作规范（硬边界、已固化决策、已知陷阱），用于防止多 Day 实施中的细节漂移。
 - [`docs/tools.md`](docs/tools.md)：工具体系（目录职责、内置工具、注册表机制与决策记录）。
+- [`docs/cli.md`](docs/cli.md)：CLI 多行编辑、终端输出、Ctrl+C 修复与验证总结。
 
 ## 目录结构
 
@@ -178,17 +198,21 @@ MiniCode-go/
 │   ├── spec.md
 │   ├── plan.md
 │   ├── agent.md                       # Agent 操作规范
+│   ├── cli.md                         # CLI 交互与终端实现总结
 │   └── tools.md                       # 工具体系
 └── apps/                              # Go module: github.com/MiniCode-go/minicode
     ├── go.mod
-    ├── cmd/minicode/                  # CLI 参数、输入与展示
-    │   ├── main.go
-    │   └── output.go
+    ├── cmd/minicode/main.go           # 启动入口
+    ├── internal/cli/                  # CLI 参数、输入与展示
+    │   ├── run.go                    # 配置、信号和会话组装
+    │   ├── input.go                  # 多行编辑、按键与终端模式
+    │   ├── input_display.go          # 折行、光标定位与滚动显示
+    │   ├── output.go                 # 运行过程与最终回答展示
+    │   └── markdown.go               # 终端检测与 Markdown 渲染
     ├── internal/agent/                 # Session、模型循环、消息历史与系统 Prompt
     │   ├── session.go                  # 交互会话与 Agent Loop
     │   ├── prompt.go                   # 系统 Prompt
     │   └── output.go                   # Agent 输出接口
-    ├── internal/terminal/markdown.go  # 终端检测与 Markdown 渲染
     ├── internal/tools/                 # 工具实现 + 注册机制
     │   ├── registry.go                # Tool、ToolRegistry、参数公共校验
     │   ├── bash.go                    # bash 执行、输出截断与取消
@@ -200,7 +224,7 @@ MiniCode-go/
     │   ├── types.go
     │   └── openai.go
     └── test/                           # 测试文件单独目录(black-box)
-        ├── cmd/minicode/main_test.go   # CLI 与 Agent Loop 端到端测试
+        ├── cli/                       # CLI、输入、终端显示与退出测试
         ├── agent/agent_test.go         # Agent 输出边界与错误回传测试
         ├── tools/                      # 文件工具、bash 与注册表测试
         │   ├── bash_test.go
@@ -232,7 +256,7 @@ cp .env.example .env && $EDITOR .env && source .env   # 一次配置,反复使�
 ```
 
 ```bash
-# 启动交互模式：每行提交一轮任务，历史在当前会话内持续保留
+# 启动交互模式：Enter 提交整段输入，对话上下文在当前会话内持续保留
 ./bin/minicode
 
 # 也可通过 stdin 批量输入；EOF 后退出
@@ -248,7 +272,9 @@ printf '分析这个项目\n运行测试\n' | ./bin/minicode
 
 每个 Session 启动时会注入系统 Prompt，其中包含当前工作区、文件路径边界、工具说明、先读后改、修改后验证等规则。同一进程中的用户消息、模型回复、工具调用和工具结果会持续累积，因此后续问题可以引用前面的内容；会话尚不会保存到磁盘，退出程序后不能恢复。
 
-终端中的模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具调用信息和命令输出继续原样显示。
+终端中的模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具调用信息和命令输出原样显示。
+
+当标准输入和标准输出都连接终端时，运行过程显示在备用屏幕中；收到最终回答、发生错误或取消任务时恢复原屏幕。最终回答留在主屏幕，中间工具输出不写入主屏幕的滚动历史。非交互模式保留完整过程输出，便于管道处理和日志重定向。
 
 CLI 支持普通文本回复和 `bash` / `read` / `write` / `edit` 四个工具。模型请求工具时，会先打印调用信息，再执行、展示输出并把结果回传模型，继续请求直到得到最终回复，例如：
 

@@ -17,6 +17,10 @@
 ```text
 apps/                                # Go module 根(不是仓库根)
 ├── cmd/minicode/main.go             # CLI 入口
+├── internal/cli/                    # CLI 参数、输入、终端展示和 Markdown 渲染
+│   ├── run.go                       # 配置、信号与会话组装
+│   ├── input.go / input_display.go  # 多行编辑、按键与显示
+│   └── output.go / markdown.go      # 备用屏幕、输出与 Markdown
 ├── internal/agent/                  # 模型循环与消息历史
 ├── internal/tools/                  # 工具实现 + 注册机制
 │   ├── registry.go                  # Tool、ToolRegistry、参数公共校验
@@ -26,14 +30,16 @@ apps/                                # Go module 根(不是仓库根)
 ├── internal/provider/               # 模型协议 + OpenAI 兼容客户端(纯源码,无 _test.go)
 │   ├── types.go
 │   └── openai.go
-├── internal/terminal/markdown.go    # 终端检测与 Markdown 渲染
-└── test/provider/                   # 测试单独目录,black-box
-    └── openai_test.go               # package provider_test
+└── test/                            # 测试单独目录,black-box
+    ├── cli/                        # CLI、输入、终端显示与退出
+    ├── agent/                      # Agent 输出边界与错误回传
+    ├── tools/                      # 工具行为与取消
+    └── provider/                   # 模型协议与客户端
 ```
 
 - 后续 Day:源码 `apps/internal/<name>/`,测试 `apps/test/<name>/`,同名目录
 - 测试文件名与被测源文件同名对应;工具体系细节见 `tools.md`
-- `internal/` 不依赖 `cmd/`；第三方渲染与终端依赖集中在 `internal/terminal/`，`provider` 和 `tools` 继续只依赖标准库
+- `internal/` 不依赖 `cmd/`；第三方渲染与终端依赖集中在 `internal/cli/`，`provider` 和 `tools` 继续只依赖标准库
 - go 命令全部 `go -C apps build/test/vet ./...`
 
 ## 3. 编码风格
@@ -42,7 +48,7 @@ apps/                                # Go module 根(不是仓库根)
 - 固定配置常量统一放在文件顶部（import 之后），不在函数内部声明 const
 - 工具名称等业务标识使用命名常量，在声明和分发中复用，避免魔法值
 - 错误一律 `fmt.Errorf("context: %w", err)` 包装
-- `main` 不直接 `os.Exit`,由 `run(args, stdin, stdout, stderr) int` 返回退出码,便于测试
+- `main` 只调用 `os.Exit(cli.Run(...))`；配置、输入、展示和退出码决策放在 `internal/cli`，通过 `Run(args, stdin, stdout, stderr) int` 测试
 - HTTP handler 阻塞 ctx 时用 `select { case <-ctx.Done(): case <-time.After(backup): }` 防 `srv.Close()` hang
 - 测试覆盖正常 + 至少一个错误路径
 
@@ -83,14 +89,23 @@ apps/                                # Go module 根(不是仓库根)
 - **直接执行**：按用户当前要求展示并执行模型生成的命令，实时输出并把执行结果回传模型；本阶段不增加逐次确认交互，后续权限机制仍按 Day 6 推进。
 - **执行边界**：最多 500 轮可使用工具的模型请求；达到上限后额外请求一次纯文本总结，不再提供或执行工具。总结沿用整项任务的 timeout，失败时输出停止说明；达到上限仍返回非零退出码。取消时终止命令进程组，单次命令输出最多保留 64 KiB。
 - **实现范围**：简单循环和 bash 执行函数，不提前引入工具注册表、交互会话和持久化。
-- **职责划分**：`internal/agent` 管理模型循环、消息历史、轮数和工具分发；工具协议适配保留在该包的 `tools.go`，实际命令执行复用 `internal/tools`。`cmd/minicode` 负责参数、输入、任务取消、展示和退出码。
+- **职责划分（按当前实现更新）**：`internal/agent` 管理模型循环、消息历史、轮数和工具分发；工具协议适配与注册表位于 `internal/tools`。`internal/cli` 负责参数、输入、任务取消、展示和退出码，`cmd/minicode` 只保留启动入口。
 - **展示边界**：Agent 通过 `Output` 接口交付模型文本、工具调用、实时输出、结果和工具错误；不依赖终端渲染，不打印 CLI 前缀。终止任务的错误由 `Run` 返回。
 
 ### CLI Markdown 渲染
 
-- **职责划分**：`internal/terminal` 负责终端检测、宽度读取和 Glamour 渲染；`cmd/minicode` 调用该包，不直接依赖渲染库。
+- **职责划分（2026-10-02 调整）**：终端检测、宽度读取和 Glamour 渲染集中到 `internal/cli/markdown.go`；`cmd/minicode` 只调用 `cli.Run`。
 - **输出规则**：终端中的模型回复渲染 Markdown，按终端宽度换行；管道、文件和渲染失败时输出原文。工具输出和回传模型的消息保持原样。
 - **主题**：默认使用 `dracula`，通过 `GLAMOUR_STYLE` 覆盖。
+
+### CLI 多行编辑与终端恢复（2026-10-02）
+
+- **输入边界**：Agent 通过 `Input` 接口读取完整任务；终端支持多行编辑，管道继续逐行读取。上下键只移动当前输入光标，不浏览历史；`Shift+Enter` / `Ctrl+J` 换行，`Enter` 提交。
+- **显示一致性**：复用 readline 的缓冲区编辑和 raw 模式，由 `inputDisplay` 统一计算真实换行、软折行、显示列和滚动区域；垂直移动使用同一套显示行布局。
+- **键盘协议生命周期**：只在编辑输入时启用扩展键盘协议，转换编码后的 Ctrl+C，并在离开 raw 模式时恢复。模型和工具执行期间不得遗留该协议。
+- **取消语义**：Ctrl+C 退出整个会话；任务返回后根 context 已取消时，不再启动下一次输入 goroutine，避免退出时重新进入 raw 模式。
+- **输出生命周期**：运行过程放在备用屏幕，最终回答前及错误、超时、取消路径均恢复主屏幕；非交互模式保留完整输出。
+- **验证边界**：除提交内容外，还需覆盖 PTY 中的实际显示与光标，以及进程退出后的键盘协议和屏幕恢复；实现总结和测试入口见 [cli.md](cli.md)。
 
 ## 6. 已知陷阱
 
@@ -99,6 +114,7 @@ apps/                                # Go module 根(不是仓库根)
 3. httptest handler 阻塞 `r.Context().Done()` 不会在客户端断开时立即返回,必须加 server-side 兜底超时
 4. OpenAI 错误嵌套在 `error` 字段下,只用平铺解析会退化成原始 body
 5. 用户偏好:微信端纯文本;commit 用 `conventional + 中文 subject`;能查文件/plan/spec 就查,不替用户瞎猜
-6. 交互循环已在后台 goroutine 里独占读取 stdin(`agent.Session.Run` 的 `readLines`);Day 6 的执行前确认若再读一次 stdin 会抢输入。要么让后台 reader 广播给确认通道,要么确认固定走 `/dev/tty`。管道模式没有 TTY,必须定义降级策略(默认拒绝或加 `--yes` 自动放行)
+6. `agent.Session.Run` 按轮启动 `Input.Readline`，任务执行期间不预读下一轮输入；后续执行前确认应协调输入适配器和终端模式，避免并发读取 stdin。管道模式的确认策略尚未定义，不要把它视为已经实现
+7. 终端模拟器 vt10x 会把 Kitty 协议开关误解为光标恢复；显示测试需忽略这两个控制序列，协议配对和退出恢复必须另由输入及 CLI 子进程测试检查
 
 任何与本规范冲突的改动,先改本文件,再改实现。
