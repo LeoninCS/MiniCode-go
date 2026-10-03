@@ -304,7 +304,7 @@ func TestSession_ToolApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer session.Close()
+			defer func() { _ = session.Close() }()
 			output := &recordingOutput{}
 			if err := session.Turn(context.Background(), "run", output); err != nil {
 				t.Fatal(err)
@@ -341,7 +341,7 @@ func TestSession_ReadDoesNotRequireApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	if err := session.Turn(context.Background(), "read", &recordingOutput{}); err != nil {
 		t.Fatal(err)
 	}

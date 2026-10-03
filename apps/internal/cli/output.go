@@ -32,7 +32,7 @@ func (o *Output) BeginRunning() {
 	}
 	// 备用屏幕不会把工具输出写入主屏幕的 scrollback。相比保存/恢复游标，
 	// 即使工具输出超过终端高度并触发滚屏，退出后也不会残留中间步骤。
-	fmt.Fprint(o.stdout, "\x1b[?1049h")
+	_, _ = fmt.Fprint(o.stdout, "\x1b[?1049h")
 	o.running = true
 }
 
@@ -41,7 +41,7 @@ func (o *Output) ClearRunning() {
 	if !o.interactive || !o.running {
 		return
 	}
-	fmt.Fprint(o.stdout, "\x1b[?1049l")
+	_, _ = fmt.Fprint(o.stdout, "\x1b[?1049l")
 	o.running = false
 }
 
@@ -52,23 +52,23 @@ func (o *Output) Write(p []byte) (int, error) {
 
 // Message 渲染并展示模型回复。
 func (o *Output) Message(content string) {
-	fmt.Fprint(o.stdout, RenderMarkdown(o.stdout, content))
+	_, _ = fmt.Fprint(o.stdout, RenderMarkdown(o.stdout, content))
 }
 
 // ToolCall 在执行前展示工具名称与参数。
 func (o *Output) ToolCall(call provider.ToolCall) {
-	fmt.Fprintln(o.stdout, "tool: "+call.Function.Name)
-	fmt.Fprintln(o.stdout, "arguments: "+call.Function.Arguments)
+	_, _ = fmt.Fprintln(o.stdout, "tool: "+call.Function.Name)
+	_, _ = fmt.Fprintln(o.stdout, "arguments: "+call.Function.Arguments)
 }
 
 // ToolResult 为未以换行结尾的工具输出补上换行。
 func (o *Output) ToolResult(result string) {
 	if result != "" && !strings.HasSuffix(result, "\n") {
-		fmt.Fprintln(o.stdout)
+		_, _ = fmt.Fprintln(o.stdout)
 	}
 }
 
 // ToolError 展示会回传模型的工具错误。
 func (o *Output) ToolError(err error) {
-	fmt.Fprintln(o.stderr, "minicode: "+err.Error())
+	_, _ = fmt.Fprintln(o.stderr, "minicode: "+err.Error())
 }

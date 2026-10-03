@@ -12,7 +12,7 @@ import (
 	"github.com/ergochat/readline"
 )
 
-const approvalPrompt = "允许执行？[y/N] "
+const approvalPrompt = "允许执行？[Y/n] "
 
 // toolApprover 使用与任务输入相同的终端，请用户逐次批准有副作用的工具。
 type toolApprover struct {
@@ -47,7 +47,7 @@ func (a *toolApprover) Approve(ctx context.Context, _ provider.ToolCall) (bool, 
 		case "n", "no":
 			return false, nil
 		default:
-			fmt.Fprintln(a.output.stderr, "请输入 y/yes 批准，或 n/no 拒绝。")
+			_, _ = fmt.Fprintln(a.output.stderr, "请输入 y/yes 批准，或 n/no 拒绝。")
 		}
 	}
 }

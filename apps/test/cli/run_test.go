@@ -293,7 +293,7 @@ func TestMiniCode_ToolApproval(t *testing.T) {
 	}{
 		{name: "approve", answer: "y\n", wantRan: true, wantResult: "executed"},
 		{name: "deny", answer: "n\n", wantRan: false, wantResult: "tool execution denied by user"},
-		{name: "empty defaults to deny", answer: "\n", wantRan: false, wantResult: "tool execution denied by user"},
+		{name: "empty defaults to approve", answer: "\n", wantRan: true, wantResult: "executed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			call := provider.ToolCall{ID: "confirm", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"printf executed"}`}}
@@ -305,7 +305,7 @@ func TestMiniCode_ToolApproval(t *testing.T) {
 			if code != 0 || stderr != "" {
 				t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 			}
-			if !strings.Contains(stdout, "tool: bash\narguments: "+call.Function.Arguments+"\n允许执行？[y/N] ") {
+			if !strings.Contains(stdout, "tool: bash\narguments: "+call.Function.Arguments+"\n允许执行？[Y/n] ") {
 				t.Fatalf("approval instruction missing: %q", stdout)
 			}
 			if got := strings.Count(stdout, "executed") > 1; got != tc.wantRan {

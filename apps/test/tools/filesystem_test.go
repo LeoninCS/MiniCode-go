@@ -174,12 +174,13 @@ func TestFileTools_AtomicReplacementPreservesPermissions(t *testing.T) {
 			}
 			var err error
 			want := "changed"
-			if operation == "write" {
+			switch operation {
+			case "write":
 				_, err = files.WriteFile(ctx, "script.sh", "changed")
-			} else if operation == "edit all" {
+			case "edit all":
 				_, err = files.EditFile(ctx, "script.sh", "original", "changed", true)
 				want = "changed changed"
-			} else {
+			default:
 				_, err = files.EditFile(ctx, "script.sh", "original original", "changed", false)
 			}
 			if err != nil {

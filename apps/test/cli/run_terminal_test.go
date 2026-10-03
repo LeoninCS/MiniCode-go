@@ -36,7 +36,7 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 			started := make(chan struct{})
 			canceled := make(chan struct{})
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				io.Copy(io.Discard, r.Body)
+				_, _ = io.Copy(io.Discard, r.Body)
 				close(started)
 				<-r.Context().Done()
 				close(canceled)
@@ -64,7 +64,7 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 			}()
 			t.Cleanup(func() {
 				cancel()
-				terminal.Close()
+				_ = terminal.Close()
 				<-exited
 			})
 			chunks := make(chan string, 32)

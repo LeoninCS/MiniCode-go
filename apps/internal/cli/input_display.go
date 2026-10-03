@@ -134,7 +134,7 @@ func (d *inputDisplay) render(line []rune, pos int) {
 		column += runewidth.StringWidth(d.prompt)
 	}
 	fmt.Fprintf(&out, "\r\x1b[%dG\x1b[?25h", column+1)
-	fmt.Fprint(d.output, out.String())
+	_, _ = fmt.Fprint(d.output, out.String())
 	d.cursorRow = row - d.top
 }
 
@@ -145,6 +145,6 @@ func (d *inputDisplay) finish(line []rune) {
 	rows := d.layout(line)
 	d.writeRows(&out, line, rows, 0, len(rows))
 	out.WriteString("\r\n")
-	fmt.Fprint(d.output, out.String())
+	_, _ = fmt.Fprint(d.output, out.String())
 	d.cursorRow, d.top = 0, 0
 }

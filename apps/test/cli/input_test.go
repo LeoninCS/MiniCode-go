@@ -17,7 +17,7 @@ func TestInputNonInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInput: %v", err)
 	}
-	defer input.Close()
+	defer func() { _ = input.Close() }()
 
 	line, err := input.Readline("> ")
 	if err != nil || line != "first" {
@@ -57,7 +57,7 @@ func TestInputShiftEnter(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewInput: %v", err)
 			}
-			defer input.Close()
+			defer func() { _ = input.Close() }()
 
 			line, err := input.Readline("> ")
 			if err != nil || line != "first\nsecond" {
@@ -98,7 +98,7 @@ func TestInputInteractiveEditing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewInput: %v", err)
 			}
-			defer input.Close()
+			defer func() { _ = input.Close() }()
 
 			line, err := input.Readline("> ")
 			if err != nil || line != tc.want {
@@ -115,7 +115,7 @@ func TestInputInteractiveVerticalMovementDoesNotRecallHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInput: %v", err)
 	}
-	defer input.Close()
+	defer func() { _ = input.Close() }()
 
 	for _, want := range []string{"old", "", "drafXt\ntextY"} {
 		line, err := input.Readline("> ")
@@ -143,7 +143,7 @@ func TestInputInterrupt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer input.Close()
+			defer func() { _ = input.Close() }()
 			line, err := input.Readline("> ")
 			if !errors.Is(err, readline.ErrInterrupt) || line != "" {
 				t.Fatalf("Readline = %q, %v; want an interrupt without submitting input", line, err)
@@ -158,7 +158,7 @@ func TestInputKeyboardProtocolOnlyWhileReading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer input.Close()
+	defer func() { _ = input.Close() }()
 	if stdout.Len() != 0 {
 		t.Fatalf("keyboard protocol enabled before reading input: %q", stdout.String())
 	}

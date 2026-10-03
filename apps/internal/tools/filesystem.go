@@ -68,7 +68,7 @@ func fsReadFile(ctx context.Context, root *os.Root, path string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("open file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat file: %w", err)
@@ -128,7 +128,7 @@ func fsWriteFile(ctx context.Context, root *os.Root, path string, content []byte
 	if err != nil {
 		return fmt.Errorf("open parent directory: %w", err)
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }()
 	name := filepath.Base(path)
 	mode, err := fileMode(parent, name)
 	if err != nil {
@@ -143,8 +143,8 @@ func fsWriteFile(ctx context.Context, root *os.Root, path string, content []byte
 	if err != nil {
 		return fmt.Errorf("create temporary file: %w", err)
 	}
-	defer parent.Remove(tempName)
-	defer temp.Close()
+	defer func() { _ = parent.Remove(tempName) }()
+	defer func() { _ = temp.Close() }()
 	if _, err := temp.Write(content); err != nil {
 		return fmt.Errorf("write temporary file: %w", err)
 	}

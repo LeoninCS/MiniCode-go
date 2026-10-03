@@ -219,7 +219,7 @@ func NewInput(stdin io.Reader, stdout, stderr io.Writer, interactive bool) (*Inp
 		defer modeMu.Unlock()
 		err := makeRaw()
 		if !extendedKeys {
-			fmt.Fprint(stdout, enableExtendedKeys)
+			_, _ = fmt.Fprint(stdout, enableExtendedKeys)
 			extendedKeys = true
 		}
 		return err
@@ -228,12 +228,15 @@ func NewInput(stdin io.Reader, stdout, stderr io.Writer, interactive bool) (*Inp
 		modeMu.Lock()
 		defer modeMu.Unlock()
 		if extendedKeys {
-			fmt.Fprint(stdout, disableExtendedKeys)
+			_, _ = fmt.Fprint(stdout, disableExtendedKeys)
 			extendedKeys = false
 		}
 		return exitRaw()
 	}
-	editor.SetConfig(config)
+	if err := editor.SetConfig(config); err != nil {
+		_ = editor.Close()
+		return nil, fmt.Errorf("configure terminal input: %w", err)
+	}
 	return &Input{lineEditor: editor, multiline: multiline}, nil
 }
 
@@ -247,11 +250,11 @@ func (i *Input) Readline(prompt string) (string, error) {
 		return line, err
 	}
 
-	fmt.Fprint(i.prompt, prompt)
+	_, _ = fmt.Fprint(i.prompt, prompt)
 	if i.scanner.Scan() {
 		return i.scanner.Text(), nil
 	}
-	fmt.Fprintln(i.prompt)
+	_, _ = fmt.Fprintln(i.prompt)
 	if err := i.scanner.Err(); err != nil {
 		return "", err
 	}

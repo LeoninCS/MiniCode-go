@@ -43,7 +43,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	apiKeyVal, baseURLVal, modelVal, err := loadConfig(*apiKey, *baseURL, *model)
 	if err != nil {
-		fmt.Fprintln(stderr, "minicode: "+err.Error())
+		_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
 		printConfigHint(stderr)
 		return 2
 	}
@@ -62,24 +62,24 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	output := NewOutput(stdout, stderr, interactive)
 	input, err := NewInput(stdin, stdout, stderr, interactive)
 	if err != nil {
-		fmt.Fprintln(stderr, "minicode: "+err.Error())
+		_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
 		return 1
 	}
 	defer func() {
 		if err := input.Close(); err != nil {
-			fmt.Fprintln(stderr, "minicode: "+err.Error())
+			_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
 		}
 	}()
 
 	approver := &toolApprover{input: input, output: output, autoApprove: *yes}
 	session, err := agent.NewSession(client, approver)
 	if err != nil {
-		fmt.Fprintln(stderr, "minicode: "+err.Error())
+		_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
 		return 1
 	}
 	defer func() {
 		if err := session.Close(); err != nil {
-			fmt.Fprintln(stderr, "minicode: "+err.Error())
+			_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
 		}
 	}()
 
@@ -120,8 +120,8 @@ func firstNonEmpty(values ...string) string {
 
 // printConfigHint 在配置缺失时给一个最小使用提示。
 func printConfigHint(w io.Writer) {
-	fmt.Fprintln(w, "usage:")
-	fmt.Fprintln(w, "  MINICODE_API_KEY=... MINICODE_BASE_URL=... MINICODE_MODEL=... minicode")
-	fmt.Fprintln(w, "  MINICODE_API_KEY=... MINICODE_BASE_URL=... MINICODE_MODEL=... minicode \"your prompt\"")
-	fmt.Fprintln(w, "  echo 'your prompt' | MINICODE_API_KEY=... MINICODE_BASE_URL=... MINICODE_MODEL=... minicode")
+	_, _ = fmt.Fprintln(w, "usage:")
+	_, _ = fmt.Fprintln(w, "  MINICODE_API_KEY=... MINICODE_BASE_URL=... MINICODE_MODEL=... minicode")
+	_, _ = fmt.Fprintln(w, "  MINICODE_API_KEY=... MINICODE_BASE_URL=... MINICODE_MODEL=... minicode \"your prompt\"")
+	_, _ = fmt.Fprintln(w, "  echo 'your prompt' | MINICODE_API_KEY=... MINICODE_BASE_URL=... MINICODE_MODEL=... minicode")
 }

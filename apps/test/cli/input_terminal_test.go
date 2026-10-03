@@ -27,7 +27,7 @@ func TestInputTerminalHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer input.Close()
+	defer func() { _ = input.Close() }()
 	for {
 		line, err := input.Readline("> ")
 		if err == io.EOF {
@@ -103,7 +103,7 @@ func inputTerminal(t *testing.T, width, height int) (func(string), func([]string
 	go func() { done <- command.Wait() }()
 	t.Cleanup(func() {
 		cancel()
-		terminal.Close()
+		_ = terminal.Close()
 		<-done
 	})
 	screen := vt10x.New(vt10x.WithSize(width, height), vt10x.WithWriter(terminal))
@@ -137,7 +137,7 @@ func inputTerminal(t *testing.T, width, height int) (func(string), func([]string
 			// vt10x 会把 Kitty 的协议开关误解为 ANSI 光标恢复。
 			// 忽略这两个不影响显示的控制序列；协议生命周期由独立用例验证。
 			if sequence != "\x1b[>1u" && sequence != "\x1b[<u" {
-				screen.Write([]byte(sequence))
+				_, _ = screen.Write([]byte(sequence))
 			}
 		}
 	}()
