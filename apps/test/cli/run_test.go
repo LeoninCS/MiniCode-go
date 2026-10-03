@@ -283,6 +283,43 @@ func TestMiniCode_Responses(t *testing.T) {
 	})
 }
 
+func TestMiniCode_ToolApproval(t *testing.T) {
+	binary := buildMiniCode(t)
+	for _, tc := range []struct {
+		name       string
+		answer     string
+		wantRan    bool
+		wantResult string
+	}{
+		{name: "approve", answer: "y\n", wantRan: true, wantResult: "executed"},
+		{name: "deny", answer: "n\n", wantRan: false, wantResult: "tool execution denied by user"},
+		{name: "empty defaults to deny", answer: "\n", wantRan: false, wantResult: "tool execution denied by user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := provider.ToolCall{ID: "confirm", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"printf executed"}`}}
+			srv, requests := conversationServer(t,
+				provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}},
+				provider.NewMessage(provider.RoleAssistant, "done", ""),
+			)
+			stdout, stderr, code := runMiniCodeRaw(t, binary, srv.URL, "run", tc.answer)
+			if code != 0 || stderr != "" {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+			if !strings.Contains(stdout, "tool: bash\narguments: "+call.Function.Arguments+"\n允许执行？[y/N] ") {
+				t.Fatalf("approval instruction missing: %q", stdout)
+			}
+			if got := strings.Count(stdout, "executed") > 1; got != tc.wantRan {
+				t.Fatalf("command ran = %v, stdout = %q", got, stdout)
+			}
+			readRequest(t, requests)
+			next := readRequest(t, requests)
+			if got := next.Messages[3].Text(); got != tc.wantResult {
+				t.Fatalf("tool result = %q, want %q", got, tc.wantResult)
+			}
+		})
+	}
+}
+
 // TestMiniCode_InteractiveSession 覆盖交互循环:提示符、退出命令,
 // 以及"每轮独立、不累积历史"这一设计。
 func TestMiniCode_InteractiveSession(t *testing.T) {
@@ -462,7 +499,7 @@ func runMiniCodeRaw(t *testing.T, binary, baseURL, prompt, stdin string, flags .
 // 提示符本身由 TestMiniCode_InteractiveSession 覆盖。
 func runMiniCode(t *testing.T, binary, baseURL string, flags ...string) (string, string, int) {
 	t.Helper()
-	stdout, stderr, code := runMiniCodeRaw(t, binary, baseURL, "run tests", "", flags...)
+	stdout, stderr, code := runMiniCodeRaw(t, binary, baseURL, "run tests", "", append([]string{"-yes"}, flags...)...)
 	stdout = strings.TrimPrefix(strings.TrimSuffix(stdout, promptMarker+"\n"), promptMarker)
 	return stdout, stderr, code
 }

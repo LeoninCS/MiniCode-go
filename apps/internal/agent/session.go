@@ -34,12 +34,15 @@ type Session struct {
 	client   *provider.Client
 	files    *tools.FileTools
 	registry *tools.ToolRegistry
+	approver ToolApprover
 	messages []provider.Message
 }
 
 // NewSession 打开工作区、注册内置工具,并把系统 Prompt 作为首条消息写入历史。
+// bash、write、edit 执行前会调用可选的 approver；CLI 始终提供实现。
+// approver 为 nil 时直接执行工具。
 // 调用方负责在结束时调用 Close 释放工作区句柄。
-func NewSession(client *provider.Client) (*Session, error) {
+func NewSession(client *provider.Client, approver ToolApprover) (*Session, error) {
 	if client == nil {
 		return nil, errors.New("agent: nil client")
 	}
@@ -61,6 +64,7 @@ func NewSession(client *provider.Client) (*Session, error) {
 		client:   client,
 		files:    files,
 		registry: registry,
+		approver: approver,
 		messages: []provider.Message{provider.NewMessage(provider.RoleSystem, systemPrompt(workspace), "")},
 	}, nil
 }
@@ -201,7 +205,29 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 		}
 		assistant := len(s.messages) - 1
 		for _, call := range toolCalls {
-			output.ToolCall(call)
+			if requiresApproval(call.Function.Name) && s.approver != nil {
+				// 确认指令必须留在主屏幕，而不是随备用屏幕中的临时过程一起清除。
+				clearRunning()
+				output.ToolCall(call)
+				approved, err := s.approver.Approve(ctx, call)
+				if err != nil {
+					// 未为当前 assistant 的全部 tool_calls 生成结果时，整轮必须回滚。
+					s.messages = s.messages[:assistant]
+					return err
+				}
+				if !approved {
+					result := "tool execution denied by user"
+					output.ToolResult(result)
+					s.messages = append(s.messages, provider.NewMessage(provider.RoleTool, result, call.ID))
+					continue
+				}
+				if hasRunningOutput {
+					runningOutput.BeginRunning()
+					runningActive = true
+				}
+			} else {
+				output.ToolCall(call)
+			}
 			result, err := s.registry.Execute(ctx, call, output)
 			output.ToolResult(result)
 			if ctx.Err() != nil {

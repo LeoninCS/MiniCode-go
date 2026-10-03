@@ -32,6 +32,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		baseURL = fs.String("base-url", "", "模型服务 Base URL,例如 https://api.openai.com/v1(覆盖 MINICODE_BASE_URL)")
 		model   = fs.String("model", "", "模型名(覆盖 MINICODE_MODEL)")
 		timeout = fs.Duration("timeout", time.Hour, "单轮任务的超时时间(含模型请求和命令执行)")
+		yes     = fs.Bool("yes", false, "自动批准 bash、write、edit 工具调用")
 	)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -70,7 +71,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}()
 
-	session, err := agent.NewSession(client)
+	approver := &toolApprover{input: input, output: output, autoApprove: *yes}
+	session, err := agent.NewSession(client, approver)
 	if err != nil {
 		fmt.Fprintln(stderr, "minicode: "+err.Error())
 		return 1

@@ -261,10 +261,96 @@ func TestSession_TurnsShareHistory(t *testing.T) {
 	}
 }
 
+func TestSession_ToolApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		tool       string
+		arguments  string
+		approved   bool
+		wantResult string
+		wantOutput string
+	}{
+		{name: "approved bash executes", tool: "bash", arguments: `{"command":"printf approved"}`, approved: true, wantResult: "approved", wantOutput: "approved"},
+		{name: "denied bash is returned to model", tool: "bash", arguments: `{"command":"printf approved"}`, approved: false, wantResult: "tool execution denied by user"},
+		{name: "denied write is returned to model", tool: "write", arguments: `{"path":"must-not-exist","content":"no"}`, approved: false, wantResult: "tool execution denied by user"},
+		{name: "denied edit is returned to model", tool: "edit", arguments: `{"path":"must-not-exist","old_text":"a","new_text":"b"}`, approved: false, wantResult: "tool execution denied by user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := provider.ToolCall{ID: "approval", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: tc.tool, Arguments: tc.arguments}}
+			requests := make(chan provider.ChatRequest, 2)
+			var count atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req provider.ChatRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				requests <- req
+				message := provider.NewMessage(provider.RoleAssistant, "done", "")
+				if count.Add(1) == 1 {
+					message = provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}
+				}
+				_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
+			}))
+			defer srv.Close()
+
+			var approvals int
+			approver := agent.ToolApproverFunc(func(ctx context.Context, got provider.ToolCall) (bool, error) {
+				approvals++
+				if got != call {
+					t.Fatalf("approval call = %+v", got)
+				}
+				return tc.approved, nil
+			})
+			client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
+			session, err := agent.NewSession(client, approver)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			output := &recordingOutput{}
+			if err := session.Turn(context.Background(), "run", output); err != nil {
+				t.Fatal(err)
+			}
+			if approvals != 1 || output.String() != tc.wantOutput {
+				t.Fatalf("approvals = %d, output = %q", approvals, output.String())
+			}
+			<-requests
+			next := <-requests
+			if got := next.Messages[3].Text(); got != tc.wantResult {
+				t.Fatalf("tool result = %q, want %q", got, tc.wantResult)
+			}
+		})
+	}
+}
+
+func TestSession_ReadDoesNotRequireApproval(t *testing.T) {
+	call := provider.ToolCall{ID: "read", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "read", Arguments: `{"path":"missing"}`}}
+	var count atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		message := provider.NewMessage(provider.RoleAssistant, "done", "")
+		if count.Add(1) == 1 {
+			message = provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}
+		}
+		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
+	}))
+	defer srv.Close()
+	approver := agent.ToolApproverFunc(func(context.Context, provider.ToolCall) (bool, error) {
+		t.Fatal("read unexpectedly requested approval")
+		return false, nil
+	})
+	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
+	session, err := agent.NewSession(client, approver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err := session.Turn(context.Background(), "read", &recordingOutput{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // newSession 打开一个会话并在用例结束时释放工作区,让用例只关心单轮行为。
 func newSession(t *testing.T, client *provider.Client) *agent.Session {
 	t.Helper()
-	session, err := agent.NewSession(client)
+	session, err := agent.NewSession(client, nil)
 	if err != nil {
 		t.Fatalf("new session: %v", err)
 	}
