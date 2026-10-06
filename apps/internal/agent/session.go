@@ -137,6 +137,9 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 			cancelTurn()
 			if err != nil {
 				output.ToolError(err)
+				if errors.Is(err, context.Canceled) {
+					return 1
+				}
 				failed = true
 			}
 			// 整个会话已取消时直接退出，不再启动下一轮输入 goroutine，

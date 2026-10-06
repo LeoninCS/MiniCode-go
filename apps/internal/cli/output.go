@@ -2,6 +2,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -30,7 +32,14 @@ func (o *Output) ToolCall(call provider.ToolCall) {
 	_, _ = fmt.Fprintln(o.stdout, "arguments: "+call.Function.Arguments)
 }
 
-// ToolError 展示无法继续由模型处理的任务错误。
+// ToolError 展示无法继续由模型处理的任务错误，并将取消与超时映射为明确提示。
 func (o *Output) ToolError(err error) {
-	_, _ = fmt.Fprintln(o.stderr, "minicode: "+err.Error())
+	message := err.Error()
+	switch {
+	case errors.Is(err, context.Canceled):
+		message = "任务已中断"
+	case errors.Is(err, context.DeadlineExceeded):
+		message = "任务执行超时"
+	}
+	_, _ = fmt.Fprintln(o.stderr, "minicode: "+message)
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/MiniCode-go/minicode/internal/provider"
 )
@@ -221,11 +222,33 @@ func TestMiniCode_Responses(t *testing.T) {
 		}
 	})
 
+	t.Run("model timeout", func(t *testing.T) {
+		handlerDone := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer close(handlerDone)
+			select {
+			case <-r.Context().Done():
+			case <-time.After(3 * time.Second):
+			}
+		}))
+		defer srv.Close()
+
+		stdout, stderr, exitCode := runMiniCode(t, binary, srv.URL, "-timeout", "100ms")
+		if exitCode != 1 || stdout != "" || stderr != "minicode: 任务执行超时\n" {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
+		}
+		select {
+		case <-handlerDone:
+		case <-time.After(3 * time.Second):
+			t.Fatal("model request was not canceled after timeout")
+		}
+	})
+
 	t.Run("command timeout", func(t *testing.T) {
 		call := provider.ToolCall{ID: "slow", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"printf started; sleep 10"}`}}
 		srv, requests := conversationServer(t, provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}})
 		stdout, stderr, exitCode := runMiniCode(t, binary, srv.URL, "-timeout", "500ms")
-		if exitCode != 1 || stdout != "" || !strings.Contains(stderr, "context deadline exceeded") || len(requests) != 1 {
+		if exitCode != 1 || stdout != "" || stderr != "minicode: 任务执行超时\n" || len(requests) != 1 {
 			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
 		}
 	})

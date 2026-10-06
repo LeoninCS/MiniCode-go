@@ -2,13 +2,13 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/MiniCode-go/minicode/internal/cli"
-	"github.com/ergochat/readline"
 )
 
 func TestInputNonInteractive(t *testing.T) {
@@ -145,8 +145,8 @@ func TestInputInterrupt(t *testing.T) {
 			}
 			defer func() { _ = input.Close() }()
 			line, err := input.Readline("> ")
-			if !errors.Is(err, readline.ErrInterrupt) || line != "" {
-				t.Fatalf("Readline = %q, %v; want an interrupt without submitting input", line, err)
+			if !errors.Is(err, context.Canceled) || line != "" {
+				t.Fatalf("Readline = %q, %v; want context cancellation without submitting input", line, err)
 			}
 		})
 	}

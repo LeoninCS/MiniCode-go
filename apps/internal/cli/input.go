@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -247,6 +249,9 @@ func (i *Input) Readline(prompt string) (string, error) {
 		i.lineEditor.SetPrompt(prompt)
 		line, err := i.lineEditor.ReadLine()
 		i.multiline.display.finish(i.multiline.line)
+		if errors.Is(err, readline.ErrInterrupt) {
+			return line, context.Canceled
+		}
 		return line, err
 	}
 

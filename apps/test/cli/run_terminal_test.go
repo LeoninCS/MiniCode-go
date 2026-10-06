@@ -4,6 +4,7 @@ package cli_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -14,16 +15,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MiniCode-go/minicode/internal/provider"
 	"github.com/creack/pty"
 )
 
 func TestMiniCode_TerminalCtrlC(t *testing.T) {
 	binary := buildMiniCode(t)
 	for _, tc := range []struct {
-		name    string
-		keys    string
-		running bool
-		initial bool
+		name     string
+		keys     string
+		running  bool
+		initial  bool
+		approval bool
 	}{
 		{name: "empty input legacy", keys: "\x03"},
 		{name: "empty input kitty", keys: "\x1b[99;5u"},
@@ -31,6 +34,7 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 		{name: "multiline input xterm", keys: "draft\ntext\x1b[27;5;99~"},
 		{name: "waiting for model", running: true},
 		{name: "initial model request", running: true, initial: true},
+		{name: "waiting for approval", initial: true, approval: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			started := make(chan struct{})
@@ -38,6 +42,13 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.Copy(io.Discard, r.Body)
 				close(started)
+				if tc.approval {
+					call := provider.ToolCall{ID: "approval", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"true"}`}}
+					message := provider.NewMessage(provider.RoleAssistant, "需要执行命令。", "")
+					message.ToolCalls = []provider.ToolCall{call}
+					_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message, FinishReason: "tool_calls"}}})
+					return
+				}
 				<-r.Context().Done()
 				close(canceled)
 			}))
@@ -112,7 +123,16 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 			if !tc.initial {
 				waitForOutput("\x1b[?25h") // 输入框已进入 raw 模式并完成首次绘制。
 			}
-			if tc.running {
+			switch {
+			case tc.approval:
+				select {
+				case <-started:
+				case <-time.After(3 * time.Second):
+					t.Fatal("approval model request did not start")
+				}
+				waitForOutput("允许执行？[Y/n] ")
+				send("\x03")
+			case tc.running:
 				if !tc.initial {
 					send("request\r")
 					waitForOutput("\x1b[<u") // 输入已提交，扩展键盘协议已经恢复。
@@ -126,7 +146,7 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 					t.Fatal("model request did not start")
 				}
 				send("\x03") // 普通键盘模式下，由内核生成 SIGINT。
-			} else {
+			default:
 				send(tc.keys)
 			}
 			select {
@@ -147,13 +167,19 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 			if !errors.As(exitErr, &processError) || processError.ExitCode() != 1 {
 				t.Fatalf("exit = %v; want handled interrupt with exit code 1", exitErr)
 			}
+			if got := strings.Count(output.String(), "minicode: 任务已中断"); got != 1 {
+				t.Fatalf("interrupt message count = %d, output = %q", got, output.String())
+			}
+			if strings.Contains(output.String(), "context canceled") || strings.Contains(output.String(), "context deadline exceeded") {
+				t.Fatalf("raw context error leaked: %q", output.String())
+			}
 			if tc.running {
 				select {
 				case <-canceled:
 				case <-time.After(3 * time.Second):
 					t.Fatal("model request was not canceled")
 				}
-			} else {
+			} else if !tc.approval {
 				select {
 				case <-started:
 					t.Fatal("Ctrl+C submitted the draft to the model")
