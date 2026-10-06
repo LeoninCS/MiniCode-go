@@ -49,20 +49,20 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 	defer srv.Close()
 
 	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
-	output := &runningRecordingOutput{}
+	output := &recordingOutput{}
 	if err := newSession(t, client).Turn(context.Background(), "run command", output); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	// 展示层收到原始 Markdown 和工具输出,不混入 CLI 标签、换行或 ANSI 样式。
-	if output.String() != "**raw-output**" {
-		t.Fatalf("tool output = %q", output.String())
+	// 中间模型文本、工具调用、工具输出和工具错误都不展示；它们仍会进入消息历史并回传模型。
+	if output.String() != "" {
+		t.Fatalf("intermediate output = %q", output.String())
 	}
-	wantEvents := []string{"begin-running", "message:**正在执行**", "call:call_1", "result:**raw-output**", "tool-error", "clear-running", "message:# 已收到错误"}
+	wantEvents := []string{"message:# 已收到错误"}
 	if !reflect.DeepEqual(output.events, wantEvents) {
 		t.Fatalf("events = %q, want %q", output.events, wantEvents)
 	}
-	if len(output.toolErrors) != 1 || !strings.Contains(output.toolErrors[0].Error(), "exit status 7") {
-		t.Fatalf("tool errors = %v", output.toolErrors)
+	if len(output.toolErrors) != 0 {
+		t.Fatalf("tool errors should stay hidden: %v", output.toolErrors)
 	}
 	if len(requests) != 2 {
 		t.Fatalf("request count = %d", len(requests))
@@ -73,7 +73,7 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 		t.Fatalf("messages = %+v", next.Messages)
 	}
 	result := next.Messages[3]
-	wantResult := "**raw-output**\nerror: " + output.toolErrors[0].Error()
+	wantResult := "**raw-output**\nerror: bash: execute command: exit status 7"
 	if result.Role != provider.RoleTool || result.ToolCallID != call.ID || result.Text() != wantResult {
 		t.Fatalf("tool result = %+v", result)
 	}
@@ -268,9 +268,8 @@ func TestSession_ToolApproval(t *testing.T) {
 		arguments  string
 		approved   bool
 		wantResult string
-		wantOutput string
 	}{
-		{name: "approved bash executes", tool: "bash", arguments: `{"command":"printf approved"}`, approved: true, wantResult: "approved", wantOutput: "approved"},
+		{name: "approved bash executes", tool: "bash", arguments: `{"command":"printf approved"}`, approved: true, wantResult: "approved"},
 		{name: "denied bash is returned to model", tool: "bash", arguments: `{"command":"printf approved"}`, approved: false, wantResult: "tool execution denied by user"},
 		{name: "denied write is returned to model", tool: "write", arguments: `{"path":"must-not-exist","content":"no"}`, approved: false, wantResult: "tool execution denied by user"},
 		{name: "denied edit is returned to model", tool: "edit", arguments: `{"path":"must-not-exist","old_text":"a","new_text":"b"}`, approved: false, wantResult: "tool execution denied by user"},
@@ -309,8 +308,8 @@ func TestSession_ToolApproval(t *testing.T) {
 			if err := session.Turn(context.Background(), "run", output); err != nil {
 				t.Fatal(err)
 			}
-			if approvals != 1 || output.String() != tc.wantOutput {
-				t.Fatalf("approvals = %d, output = %q", approvals, output.String())
+			if approvals != 1 || output.String() != "" {
+				t.Fatalf("approvals = %d, intermediate output = %q", approvals, output.String())
 			}
 			<-requests
 			next := <-requests
@@ -368,28 +367,7 @@ func (o *recordingOutput) Message(content string) {
 	o.events = append(o.events, "message:"+content)
 }
 
-func (o *recordingOutput) ToolCall(call provider.ToolCall) {
-	o.events = append(o.events, "call:"+call.ID)
-}
-
-func (o *recordingOutput) ToolResult(result string) {
-	o.events = append(o.events, "result:"+result)
-}
-
 func (o *recordingOutput) ToolError(err error) {
 	o.events = append(o.events, "tool-error")
 	o.toolErrors = append(o.toolErrors, err)
-}
-
-// runningRecordingOutput 验证支持生命周期接口的展示层会在最终回答前收到清理通知。
-type runningRecordingOutput struct {
-	recordingOutput
-}
-
-func (o *runningRecordingOutput) BeginRunning() {
-	o.events = append(o.events, "begin-running")
-}
-
-func (o *runningRecordingOutput) ClearRunning() {
-	o.events = append(o.events, "clear-running")
 }

@@ -155,24 +155,6 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 // 工具失败会作为结果回传给模型,任务被取消时丢弃未配对的半轮消息。
 func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 	s.messages = append(s.messages, provider.NewMessage(provider.RoleUser, input, ""))
-	runningOutput, hasRunningOutput := output.(RunningOutput)
-	runningActive := false
-	if hasRunningOutput {
-		runningOutput.BeginRunning()
-		runningActive = true
-	}
-	// 模型请求失败、任务超时或用户取消时也必须恢复终端，不能把用户留在备用屏幕。
-	defer func() {
-		if runningActive {
-			runningOutput.ClearRunning()
-		}
-	}()
-	clearRunning := func() {
-		if runningActive {
-			runningOutput.ClearRunning()
-			runningActive = false
-		}
-	}
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
 		resp, err := s.client.Chat(ctx, provider.ChatRequest{
@@ -190,12 +172,8 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 		if content == "" && len(toolCalls) == 0 {
 			return errors.New("empty response from model")
 		}
-		if content != "" {
-			// 带工具调用的 content 属于运行过程，暂时展示；只有不再调用工具的
-			// content 才是最终回答，此时先清掉本轮全部临时输出。
-			if len(toolCalls) == 0 {
-				clearRunning()
-			}
+		// 带工具调用的文本属于模型的中间过程，不展示；只有不再调用工具时才输出最终回复。
+		if content != "" && len(toolCalls) == 0 {
 			output.Message(content)
 		}
 		// assistant 消息无论是否带工具调用都要进历史,否则下一轮模型看不到自己刚说过什么。
@@ -206,9 +184,6 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 		assistant := len(s.messages) - 1
 		for _, call := range toolCalls {
 			if requiresApproval(call.Function.Name) && s.approver != nil {
-				// 确认指令必须留在主屏幕，而不是随备用屏幕中的临时过程一起清除。
-				clearRunning()
-				output.ToolCall(call)
 				approved, err := s.approver.Approve(ctx, call)
 				if err != nil {
 					// 未为当前 assistant 的全部 tool_calls 生成结果时，整轮必须回滚。
@@ -217,19 +192,11 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 				}
 				if !approved {
 					result := "tool execution denied by user"
-					output.ToolResult(result)
 					s.messages = append(s.messages, provider.NewMessage(provider.RoleTool, result, call.ID))
 					continue
 				}
-				if hasRunningOutput {
-					runningOutput.BeginRunning()
-					runningActive = true
-				}
-			} else {
-				output.ToolCall(call)
 			}
-			result, err := s.registry.Execute(ctx, call, output)
-			output.ToolResult(result)
+			result, err := s.registry.Execute(ctx, call, io.Discard)
 			if ctx.Err() != nil {
 				// assistant 消息带着 tool_calls 进入历史,缺任何一条工具结果都会让
 				// 下一次请求非法,所以整轮回滚而不是留下半轮。
@@ -237,16 +204,14 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 				return ctx.Err()
 			}
 			if err != nil {
-				output.ToolError(err)
 				result += "\nerror: " + err.Error()
 			}
 			s.messages = append(s.messages, provider.NewMessage(provider.RoleTool, result, call.ID))
 		}
 	}
 	content, err := summarizeAtTurnLimit(ctx, s.client, s.messages)
-	clearRunning()
 	if err != nil {
-		output.Message(fmt.Sprintf("已达到最大执行轮数（%d），本次任务已停止，未能生成最终总结。请结合上方工具输出确认已完成的工作。", maxTurns))
+		output.Message(fmt.Sprintf("已达到最大执行轮数（%d），本次任务已停止，未能生成最终总结。请根据最终工作区状态确认已完成的工作。", maxTurns))
 		return fmt.Errorf("reached maximum model turns (%d); summarize: %w", maxTurns, err)
 	}
 	output.Message(content)

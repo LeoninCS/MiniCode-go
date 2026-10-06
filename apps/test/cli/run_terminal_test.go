@@ -115,8 +115,8 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 			if tc.running {
 				if !tc.initial {
 					send("request\r")
+					waitForOutput("\x1b[<u") // 输入已提交，扩展键盘协议已经恢复。
 				}
-				waitForOutput("\x1b[?1049h")
 				if strings.Count(output.String(), "\x1b[>1u") != strings.Count(output.String(), "\x1b[<u") {
 					t.Fatalf("extended keyboard protocol still enabled while running: %q", output.String())
 				}

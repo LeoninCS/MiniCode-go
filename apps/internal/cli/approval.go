@@ -21,12 +21,13 @@ type toolApprover struct {
 	autoApprove bool
 }
 
-func (a *toolApprover) Approve(ctx context.Context, _ provider.ToolCall) (bool, error) {
+func (a *toolApprover) Approve(ctx context.Context, call provider.ToolCall) (bool, error) {
+	// 自动批准不展示审批信息；只有真正等待用户决策时才输出调用内容。
 	if a.autoApprove {
 		return true, nil
 	}
+	a.output.ToolCall(call)
 
-	// Agent 已恢复主屏幕并展示完整指令；这里仅负责读取判断。
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, err
