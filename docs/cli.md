@@ -1,6 +1,6 @@
 # CLI 交互与终端实现总结
 
-更新日期：2026-10-02。对应实现提交：`ef0b643`（集中 CLI 实现）与 `49c507d`（多行编辑和 Ctrl+C 修复）。
+更新日期：2026-10-06。对应实现提交：`ef0b643`（集中 CLI 实现）、`49c507d`（多行编辑和 Ctrl+C 修复）与 `f5261f0`（任务状态提示区分）。
 
 本次完成终端多行编辑、运行输出隔离，以及输入和任务执行期间的 Ctrl+C 退出修复。命令行位置参数、管道逐行输入和同一 Session 内的对话上下文继续沿用原有流程。
 
@@ -53,10 +53,11 @@
 
 - `terminalKeyReader` 将 Kitty / CSI-u 的 `ESC[99;5u` 和 xterm modifyOtherKeys 的 `ESC[27;5;99~` 转换为 readline 的中断字符，保留传统 Ctrl+C 字节的处理。
 - 扩展键盘协议随 raw 模式开启和恢复；提交、中断、EOF 或关闭输入时恢复原协议，模型和工具执行期间使用普通键盘模式。
-- 输入阶段的中断错误结束会话，草稿不会提交给模型；运行阶段的 SIGINT / SIGTERM 取消根 context，沿现有链路取消 HTTP 请求和命令进程组。
-- 任务返回后检查根 context，已取消时立即退出，避免重新打开输入框。
+- 输入阶段的中断由 `Input.Readline` 统一转换为 `context.Canceled`；运行阶段的 SIGINT / SIGTERM 取消根 context，沿现有链路取消 HTTP 请求和命令进程组。
+- `Output.ToolError` 根据错误链区分任务中断、任务超时和普通失败：分别显示「任务已中断」「任务执行超时」或具体错误，避免泄漏 `context canceled` 等底层提示。
+- 任务返回后检查根 context，已取消时立即退出，避免重新打开输入框；等待审批期间取消也沿同一链路结束。
 
-当前 Ctrl+C 退出码为 `1`。用户取消与普通任务失败的提示文案尚未区分，仍属于 Day 8 的待办；本次没有实现“仅取消本轮、保留会话”的交互。
+当前 Ctrl+C 退出码为 `1`，输入、等待模型和等待审批时均输出一次「任务已中断」。当前行为是取消后退出整个会话，不是“仅取消本轮、保留会话”。
 
 ## 4. 运行输出与终端恢复
 
@@ -82,9 +83,9 @@ go -C apps build -o ../bin/minicode ./cmd/minicode
 | --- | --- |
 | [`input_test.go`](../apps/test/cli/input_test.go) | 管道输入、换行编码、中文和 emoji 编辑、跨行移动、行合并、上下键不调用历史、Ctrl+C 与键盘协议生命周期 |
 | [`input_terminal_test.go`](../apps/test/cli/input_terminal_test.go) | PTY 子进程中的多行显示、实际光标位置、软折行、滚动和中文显示列 |
-| [`run_terminal_test.go`](../apps/test/cli/run_terminal_test.go) | 空输入、多行编辑、等待模型及位置参数启动任务时的 Ctrl+C 退出；HTTP 取消、退出码、草稿不提交及终端控制序列恢复 |
-| [`output_test.go`](../apps/test/cli/output_test.go) | 备用屏幕切换、重复清理和非交互输出 |
-| [`run_test.go`](../apps/test/cli/run_test.go) | CLI 配置、模型与工具调用、管道和多轮会话兼容性 |
+| [`run_terminal_test.go`](../apps/test/cli/run_terminal_test.go) | 空输入、多行编辑、等待模型、等待审批及位置参数启动任务时的 Ctrl+C 退出；HTTP 取消、明确中断提示、退出码、草稿不提交及终端控制序列恢复 |
+| [`output_test.go`](../apps/test/cli/output_test.go) | 备用屏幕切换、重复清理、非交互输出，以及中断、超时和普通失败的提示分类 |
+| [`run_test.go`](../apps/test/cli/run_test.go) | CLI 配置、模型与工具调用、管道和多轮会话兼容性，以及任务超时提示 |
 
 PTY 测试带有 `darwin || linux` 构建约束，本次验证不包含 Windows 终端。显示测试中的 vt10x 不支持 Kitty 键盘协议开关，会将其误解为光标恢复，因此显示模拟器忽略这两个序列；协议开关的配对和退出恢复由独立输入测试与真实 CLI 子进程测试检查。
 
