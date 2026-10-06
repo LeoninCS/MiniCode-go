@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const maxLogBodyBytes = 512
+const (
+	maxLogBodyBytes        = 512
+	defaultMaxOutputTokens = 16384
+)
 
 // Config 是构造 Client 所需的最小配置。
 type Config struct {
@@ -23,6 +26,8 @@ type Config struct {
 	APIKey string
 	// Model 是默认使用的模型名,例如 "gpt-4o-mini"、"deepseek-chat"。
 	Model string
+	// MaxOutputTokens 限制每次模型调用最多生成的 token 数；为 0 时使用默认值 16384。
+	MaxOutputTokens int
 	// HTTPClient 可选,允许调用方注入自定义 transport(例如测试或代理)。
 	HTTPClient *http.Client
 }
@@ -41,6 +46,9 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: time.Hour}
+	}
+	if cfg.MaxOutputTokens == 0 {
+		cfg.MaxOutputTokens = defaultMaxOutputTokens
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	return &Client{cfg: cfg, http: cfg.HTTPClient}
@@ -62,6 +70,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	if strings.TrimSpace(c.cfg.APIKey) == "" {
 		return nil, errors.New("provider: empty API key")
 	}
+	if c.cfg.MaxOutputTokens < 0 {
+		return nil, errors.New("provider: max output tokens must be greater than zero")
+	}
 	if len(req.Messages) == 0 {
 		return nil, errors.New("provider: empty messages")
 	}
@@ -73,6 +84,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		return nil, errors.New("provider: empty model")
 	}
 	req.Model = model
+	req.MaxTokens = c.cfg.MaxOutputTokens
 
 	body, err := json.Marshal(req)
 	if err != nil {

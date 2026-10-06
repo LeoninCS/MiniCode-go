@@ -53,9 +53,10 @@ func (m Message) Text() string {
 // ChatRequest 是发往模型服务的一次非流式对话请求。
 // 使用接口默认的单条回复,不设置多候选参数。
 type ChatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Tools    []Tool    `json:"tools,omitempty"`
+	Model     string    `json:"model"`
+	Messages  []Message `json:"messages"`
+	Tools     []Tool    `json:"tools,omitempty"`
+	MaxTokens int       `json:"max_tokens,omitempty"`
 }
 
 // ToolType 表示模型可调用的工具类型。

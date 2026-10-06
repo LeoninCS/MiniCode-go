@@ -19,9 +19,10 @@ func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *p
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv, provider.NewClient(provider.Config{
-		BaseURL: srv.URL,
-		APIKey:  "test-key",
-		Model:   "test-model",
+		BaseURL:         srv.URL,
+		APIKey:          "test-key",
+		Model:           "test-model",
+		MaxOutputTokens: 4096,
 	})
 }
 
@@ -43,6 +44,9 @@ func TestClient_Chat_Success(t *testing.T) {
 		}
 		if req.Model != "test-model" {
 			t.Errorf("expected model test-model, got %s", req.Model)
+		}
+		if req.MaxTokens != 4096 {
+			t.Errorf("expected max_tokens 4096, got %d", req.MaxTokens)
 		}
 		if len(req.Messages) != 1 || req.Messages[0].Role != provider.RoleUser || req.Messages[0].Text() != "hi" {
 			t.Errorf("unexpected messages: %+v", req.Messages)
@@ -71,6 +75,29 @@ func TestClient_Chat_Success(t *testing.T) {
 	}
 	if resp.Usage.TotalTokens != 3 {
 		t.Errorf("unexpected usage: %+v", resp.Usage)
+	}
+}
+
+func TestClient_Chat_DefaultMaxOutputTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req provider.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if req.MaxTokens != 16384 {
+			t.Errorf("expected default max_tokens 16384, got %d", req.MaxTokens)
+		}
+		_ = json.NewEncoder(w).Encode(provider.ChatResponse{
+			Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "ok", "")}},
+		})
+	}))
+	defer srv.Close()
+
+	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	if _, err := client.Chat(context.Background(), provider.ChatRequest{
+		Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")},
+	}); err != nil {
+		t.Fatalf("chat: %v", err)
 	}
 }
 
@@ -225,6 +252,12 @@ func TestClient_Chat_Validation(t *testing.T) {
 			cfg:     provider.Config{BaseURL: "http://example.com", APIKey: "k"},
 			req:     provider.ChatRequest{Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "x", "")}},
 			wantSub: "empty model",
+		},
+		{
+			name:    "negative max output tokens",
+			cfg:     provider.Config{BaseURL: "http://example.com", APIKey: "k", Model: "m", MaxOutputTokens: -1},
+			req:     provider.ChatRequest{Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "x", "")}},
+			wantSub: "max output tokens must be greater than zero",
 		},
 	}
 	for _, tc := range tests {
