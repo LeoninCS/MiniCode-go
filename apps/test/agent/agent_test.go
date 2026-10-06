@@ -276,6 +276,7 @@ func TestSession_ToolApproval(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			call := provider.ToolCall{ID: "approval", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: tc.tool, Arguments: tc.arguments}}
+			const approvalContent = "需要执行有副作用的操作。"
 			requests := make(chan provider.ChatRequest, 2)
 			var count atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -284,15 +285,19 @@ func TestSession_ToolApproval(t *testing.T) {
 				requests <- req
 				message := provider.NewMessage(provider.RoleAssistant, "done", "")
 				if count.Add(1) == 1 {
-					message = provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}
+					message = provider.NewMessage(provider.RoleAssistant, approvalContent, "")
+					message.ToolCalls = []provider.ToolCall{call}
 				}
 				_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
 			}))
 			defer srv.Close()
 
 			var approvals int
-			approver := agent.ToolApproverFunc(func(ctx context.Context, got provider.ToolCall) (bool, error) {
+			approver := agent.ToolApproverFunc(func(ctx context.Context, content string, got provider.ToolCall) (bool, error) {
 				approvals++
+				if content != approvalContent {
+					t.Fatalf("approval content = %q, want %q", content, approvalContent)
+				}
 				if got != call {
 					t.Fatalf("approval call = %+v", got)
 				}
@@ -331,7 +336,7 @@ func TestSession_ReadDoesNotRequireApproval(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
 	}))
 	defer srv.Close()
-	approver := agent.ToolApproverFunc(func(context.Context, provider.ToolCall) (bool, error) {
+	approver := agent.ToolApproverFunc(func(context.Context, string, provider.ToolCall) (bool, error) {
 		t.Fatal("read unexpectedly requested approval")
 		return false, nil
 	})

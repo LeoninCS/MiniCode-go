@@ -293,15 +293,18 @@ func TestMiniCode_ToolApproval(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			call := provider.ToolCall{ID: "confirm", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"printf executed"}`}}
+			const approvalContent = "即将执行命令。"
+			approvalMessage := provider.NewMessage(provider.RoleAssistant, approvalContent, "")
+			approvalMessage.ToolCalls = []provider.ToolCall{call}
 			srv, requests := conversationServer(t,
-				provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}},
+				approvalMessage,
 				provider.NewMessage(provider.RoleAssistant, "done", ""),
 			)
 			stdout, stderr, code := runMiniCodeRaw(t, binary, srv.URL, "run", tc.answer)
 			if code != 0 || stderr != "" {
 				t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 			}
-			if !strings.Contains(stdout, "tool: bash\narguments: "+call.Function.Arguments+"\n允许执行？[Y/n] ") {
+			if !strings.Contains(stdout, approvalContent+"\ntool: bash\narguments: "+call.Function.Arguments+"\n允许执行？[Y/n] ") {
 				t.Fatalf("approval instruction missing: %q", stdout)
 			}
 			if strings.Contains(stdout, "\nexecuted\n") {

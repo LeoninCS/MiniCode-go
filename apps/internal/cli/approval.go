@@ -21,10 +21,13 @@ type toolApprover struct {
 	autoApprove bool
 }
 
-func (a *toolApprover) Approve(ctx context.Context, call provider.ToolCall) (bool, error) {
-	// 自动批准不展示审批信息；只有真正等待用户决策时才输出调用内容。
+func (a *toolApprover) Approve(ctx context.Context, content string, call provider.ToolCall) (bool, error) {
+	// 自动批准不展示审批信息；只有真正等待用户决策时才输出模型说明和调用内容。
 	if a.autoApprove {
 		return true, nil
+	}
+	if content != "" {
+		a.output.Message(content)
 	}
 	a.output.ToolCall(call)
 

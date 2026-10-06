@@ -184,7 +184,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 		assistant := len(s.messages) - 1
 		for _, call := range toolCalls {
 			if requiresApproval(call.Function.Name) && s.approver != nil {
-				approved, err := s.approver.Approve(ctx, call)
+				approved, err := s.approver.Approve(ctx, content, call)
 				if err != nil {
 					// 未为当前 assistant 的全部 tool_calls 生成结果时，整轮必须回滚。
 					s.messages = s.messages[:assistant]
