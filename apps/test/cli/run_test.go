@@ -71,7 +71,10 @@ func TestMiniCode_Responses(t *testing.T) {
 			assistant := provider.Message{Role: provider.RoleAssistant, Content: tc.content, ToolCalls: []provider.ToolCall{call}}
 			srv, requests := conversationServer(t, assistant, provider.NewMessage(provider.RoleAssistant, "命令执行完成。", ""))
 			stdout, stderr, exitCode := runMiniCode(t, binary, srv.URL)
-			want := "命令执行完成。\n"
+			want := "tool: bash\narguments: " + call.Function.Arguments + "\n命令执行完成。\n"
+			if tc.content != nil && *tc.content != "" {
+				want = *tc.content + "\n" + want
+			}
 			if exitCode != 0 || stdout != want || stderr != "" {
 				t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
 			}
@@ -101,7 +104,11 @@ func TestMiniCode_Responses(t *testing.T) {
 			provider.NewMessage(provider.RoleAssistant, "done", ""),
 		)
 		stdout, stderr, exitCode := runMiniCode(t, binary, srv.URL)
-		if exitCode != 0 || stderr != "" || stdout != "done\n" {
+		want := "tool: bash\narguments: " + first.Function.Arguments + "\n" +
+			"tool: bash\narguments: " + second.Function.Arguments + "\n" +
+			"tool: bash\narguments: " + third.Function.Arguments + "\n" +
+			"done\n"
+		if exitCode != 0 || stderr != "" || stdout != want {
 			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
 		}
 		readRequest(t, requests)
@@ -142,7 +149,11 @@ func TestMiniCode_Responses(t *testing.T) {
 				provider.NewMessage(provider.RoleAssistant, "已收到工具错误。", ""),
 			)
 			stdout, stderr, exitCode := runMiniCode(t, binary, srv.URL)
-			if exitCode != 0 || stdout != "已收到工具错误。\n" || stderr != "" {
+			want := "已收到工具错误。\n"
+			if tc.tool == "bash" {
+				want = "tool: bash\narguments: " + call.Function.Arguments + "\n" + want
+			}
+			if exitCode != 0 || stdout != want || stderr != "" {
 				t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
 			}
 			readRequest(t, requests)
@@ -190,8 +201,8 @@ func TestMiniCode_Responses(t *testing.T) {
 			if exitCode != 1 || !strings.Contains(stdout, tc.wantText) || !strings.Contains(stderr, "maximum model turns (500)") || !strings.Contains(stderr, tc.wantError) || len(requests) != 501 {
 				t.Fatalf("exit = %d, requests = %d, stdout = %q, stderr = %q", exitCode, len(requests), stdout, stderr)
 			}
-			if strings.Contains(stdout, "tool: bash\n") || strings.Contains(stdout, "should-not-run") {
-				t.Fatalf("unexpected tool execution after limit: %q", stdout)
+			if strings.Contains(stdout, "should-not-run") || strings.Count(stdout, "tool: bash\narguments: "+call.Function.Arguments+"\n") != 500 {
+				t.Fatalf("tool steps or turn-limit behavior are incorrect: %q", stdout)
 			}
 			for i := 0; i < 500; i++ {
 				readRequest(t, requests)
@@ -248,7 +259,7 @@ func TestMiniCode_Responses(t *testing.T) {
 		call := provider.ToolCall{ID: "slow", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"printf started; sleep 10"}`}}
 		srv, requests := conversationServer(t, provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}})
 		stdout, stderr, exitCode := runMiniCode(t, binary, srv.URL, "-timeout", "500ms")
-		if exitCode != 1 || stdout != "" || stderr != "minicode: 任务执行超时\n" || len(requests) != 1 {
+		if exitCode != 1 || stdout != "tool: bash\narguments: "+call.Function.Arguments+"\n" || stderr != "minicode: 任务执行超时\n" || len(requests) != 1 {
 			t.Fatalf("exit = %d, stdout = %q, stderr = %q", exitCode, stdout, stderr)
 		}
 	})
@@ -305,6 +316,33 @@ func TestMiniCode_Responses(t *testing.T) {
 
 func TestMiniCode_ToolApproval(t *testing.T) {
 	binary := buildMiniCode(t)
+	t.Run("auto approve shows steps without prompting", func(t *testing.T) {
+		call := provider.ToolCall{ID: "auto-confirm", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"printf executed"}`}}
+		const approvalContent = "即将自动执行命令。"
+		approvalMessage := provider.NewMessage(provider.RoleAssistant, approvalContent, "")
+		approvalMessage.ToolCalls = []provider.ToolCall{call}
+		srv, requests := conversationServer(t,
+			approvalMessage,
+			provider.NewMessage(provider.RoleAssistant, "done", ""),
+		)
+
+		stdout, stderr, code := runMiniCodeRaw(t, binary, srv.URL, "run", "", "-yes")
+		if code != 0 || stderr != "" {
+			t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		if !strings.Contains(stdout, approvalContent+"\ntool: bash\narguments: "+call.Function.Arguments+"\n") {
+			t.Fatalf("auto-approved tool step missing: %q", stdout)
+		}
+		if strings.Contains(stdout, "允许执行？[Y/n] ") {
+			t.Fatalf("auto approval should not prompt: %q", stdout)
+		}
+		readRequest(t, requests)
+		next := readRequest(t, requests)
+		if got := next.Messages[3].Text(); got != "executed" {
+			t.Fatalf("tool result = %q, want executed", got)
+		}
+	})
+
 	for _, tc := range []struct {
 		name       string
 		answer     string

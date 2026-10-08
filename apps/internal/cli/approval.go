@@ -22,14 +22,15 @@ type toolApprover struct {
 }
 
 func (a *toolApprover) Approve(ctx context.Context, content string, call provider.ToolCall) (bool, error) {
-	// 自动批准不展示审批信息；只有真正等待用户决策时才输出模型说明和调用内容。
-	if a.autoApprove {
-		return true, nil
-	}
+	// 无论是否自动批准，都展示与手动审批相同的模型说明和工具调用；
+	// --yes 只跳过用户选择，不隐藏执行过程。
 	if content != "" {
 		a.output.Message(content)
 	}
 	a.output.ToolCall(call)
+	if a.autoApprove {
+		return true, nil
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
