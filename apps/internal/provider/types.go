@@ -150,7 +150,7 @@ type ChatResponse struct {
 	ID      string   `json:"id"`
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
-	Usage   Usage    `json:"usage"`
+	Usage   *Usage   `json:"usage,omitempty"`
 }
 
 // Choice 是 ChatResponse 中的一条候选回复。

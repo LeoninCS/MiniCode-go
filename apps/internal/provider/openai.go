@@ -149,10 +149,14 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	span.SetAttributes(
 		attribute.String("gen_ai.response.id", out.ID),
 		attribute.String("gen_ai.response.model", out.Model),
-		attribute.Int("gen_ai.usage.input_tokens", out.Usage.PromptTokens),
-		attribute.Int("gen_ai.usage.output_tokens", out.Usage.CompletionTokens),
-		attribute.Int("gen_ai.usage.total_tokens", out.Usage.TotalTokens),
 	)
+	if out.Usage != nil {
+		span.SetAttributes(
+			attribute.Int("gen_ai.usage.input_tokens", out.Usage.PromptTokens),
+			attribute.Int("gen_ai.usage.output_tokens", out.Usage.CompletionTokens),
+			attribute.Int("gen_ai.usage.total_tokens", out.Usage.TotalTokens),
+		)
+	}
 	return &out, nil
 }
 

@@ -45,7 +45,12 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 		}
 		requests <- req
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: replies[index]}}})
+		_ = json.NewEncoder(w).Encode(provider.ChatResponse{
+			Choices: []provider.Choice{{Message: replies[index]}},
+			Usage: &provider.Usage{
+				PromptTokens: 10 * (index + 1), CompletionTokens: index + 1, TotalTokens: 11 * (index + 1),
+			},
+		})
 	}))
 	defer srv.Close()
 
@@ -67,6 +72,7 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 		"tool-start:1:bash",
 		"tool-done:bash:failed",
 		"model-start:2",
+		"stats:2:1:33",
 	}
 	if !reflect.DeepEqual(output.processEvents, wantProcess) {
 		t.Fatalf("process events = %q, want %q", output.processEvents, wantProcess)
@@ -393,6 +399,10 @@ func (o *recordingOutput) ToolStart(turn int, call provider.ToolCall) {
 
 func (o *recordingOutput) ToolDone(name string, status agent.ToolStatus, _ time.Duration) {
 	o.processEvents = append(o.processEvents, fmt.Sprintf("tool-done:%s:%s", name, status))
+}
+
+func (o *recordingOutput) TaskDone(stats agent.TaskStats) {
+	o.processEvents = append(o.processEvents, fmt.Sprintf("stats:%d:%d:%d", stats.ModelCalls, stats.ToolCalls, stats.TotalTokens))
 }
 
 func (o *recordingOutput) ToolError(err error) {

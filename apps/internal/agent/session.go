@@ -160,6 +160,25 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 // 无论成功失败,历史都保持可以继续发送的状态:
 // 工具失败会作为结果回传给模型,任务被取消时丢弃未配对的半轮消息。
 func (s *Session) Turn(ctx context.Context, input string, output Output) (turnErr error) {
+	started := time.Now()
+	stats := TaskStats{}
+	addUsage := func(resp *provider.ChatResponse) {
+		if resp == nil || resp.Usage == nil {
+			return
+		}
+		stats.UsageResponses++
+		stats.InputTokens += resp.Usage.PromptTokens
+		stats.OutputTokens += resp.Usage.CompletionTokens
+		stats.TotalTokens += resp.Usage.TotalTokens
+		if resp.Usage.TotalTokens == 0 && (resp.Usage.PromptTokens != 0 || resp.Usage.CompletionTokens != 0) {
+			stats.TotalTokens += resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+		}
+	}
+	defer func() {
+		stats.Duration = time.Since(started)
+		output.TaskDone(stats)
+	}()
+
 	ctx, turnSpan := s.client.Tracer().Start(ctx, "minicode turn",
 		trace.WithAttributes(
 			attribute.String("langfuse.observation.type", "span"),
@@ -177,6 +196,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
 		turnNumber := turn + 1
+		stats.ModelCalls++
 		output.ModelStart(turnNumber)
 		resp, err := s.client.Chat(ctx, provider.ChatRequest{
 			Messages: s.messages,
@@ -185,6 +205,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 		if err != nil {
 			return err
 		}
+		addUsage(resp)
 		toolCalls, err := resp.ToolCalls()
 		if err != nil {
 			return fmt.Errorf("invalid response from model: %w", err)
@@ -205,6 +226,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 		}
 		assistant := len(s.messages) - 1
 		for _, call := range toolCalls {
+			stats.ToolCalls++
 			output.ToolStart(turnNumber, call)
 			started := time.Now()
 			toolCtx, toolSpan := s.client.Tracer().Start(ctx, "tool "+call.Function.Name,
@@ -259,7 +281,11 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 			s.messages = append(s.messages, provider.NewMessage(provider.RoleTool, result, call.ID))
 		}
 	}
-	content, err := summarizeAtTurnLimit(ctx, s.client, s.messages)
+	stats.ModelCalls++
+	content, summaryResp, err := summarizeAtTurnLimit(ctx, s.client, s.messages)
+	if summaryResp != nil {
+		addUsage(summaryResp)
+	}
 	if err != nil {
 		output.Message(fmt.Sprintf("已达到最大执行轮数（%d），本次任务已停止，未能生成最终总结。请根据最终工作区状态确认已完成的工作。", maxTurns))
 		return fmt.Errorf("reached maximum model turns (%d); summarize: %w", maxTurns, err)
@@ -274,22 +300,22 @@ func (s *Session) Close() error {
 }
 
 // summarizeAtTurnLimit 在完整工具结果之后请求一次总结,不再提供或执行工具。
-func summarizeAtTurnLimit(ctx context.Context, client *provider.Client, messages []provider.Message) (string, error) {
+func summarizeAtTurnLimit(ctx context.Context, client *provider.Client, messages []provider.Message) (string, *provider.ChatResponse, error) {
 	messages = append(messages, provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, ""))
 	resp, err := client.Chat(ctx, provider.ChatRequest{Messages: messages})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	calls, err := resp.ToolCalls()
 	if err != nil {
-		return "", fmt.Errorf("invalid summary response: %w", err)
+		return "", resp, fmt.Errorf("invalid summary response: %w", err)
 	}
 	if len(calls) > 0 {
-		return "", errors.New("summary response requested tools")
+		return "", resp, errors.New("summary response requested tools")
 	}
 	content := resp.Content()
 	if strings.TrimSpace(content) == "" {
-		return "", errors.New("empty summary response from model")
+		return "", resp, errors.New("empty summary response from model")
 	}
-	return content, nil
+	return content, resp, nil
 }

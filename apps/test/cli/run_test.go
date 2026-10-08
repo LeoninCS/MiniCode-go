@@ -314,6 +314,39 @@ func TestMiniCode_Responses(t *testing.T) {
 	})
 }
 
+func TestMiniCode_TaskStats(t *testing.T) {
+	binary := buildMiniCode(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		index := int(calls.Add(1))
+		message := provider.NewMessage(provider.RoleAssistant, "done", "")
+		if index == 1 {
+			message = provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+				ID: "read", Type: provider.ToolTypeFunction,
+				Function: provider.FunctionCall{Name: "read", Arguments: `{"path":"missing"}`},
+			}}}
+		}
+		_ = json.NewEncoder(w).Encode(provider.ChatResponse{
+			Choices: []provider.Choice{{Message: message}},
+			Usage:   &provider.Usage{PromptTokens: index * 10, CompletionTokens: index, TotalTokens: index * 11},
+		})
+	}))
+	defer srv.Close()
+
+	stdout, stderr, code := runMiniCodeRawWithStats(t, binary, srv.URL, "collect stats", "", "-yes")
+	if code != 0 || !strings.Contains(stdout, "done") {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	for _, want := range []string{"[统计] ", "模型 2 次", "工具 1 次", "Token 33（输入 30 / 输出 3）"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, missing %q", stderr, want)
+		}
+	}
+	if strings.Contains(stdout, "[统计]") {
+		t.Fatalf("non-interactive stats polluted stdout: %q", stdout)
+	}
+}
+
 func TestMiniCode_ToolApproval(t *testing.T) {
 	binary := buildMiniCode(t)
 	t.Run("auto approve shows steps without prompting", func(t *testing.T) {
@@ -527,9 +560,15 @@ func buildMiniCode(t *testing.T) string {
 	return binary
 }
 
-// runMiniCodeRaw 启动 minicode 并原样返回输出。
-// prompt 非空时作为位置参数(即循环的第一轮输入),stdin 提供之后读到的内容。
+// runMiniCodeRaw 启动 minicode，并返回去除任务统计后的输出，供既有行为测试使用。
+// 任务统计本身由 runMiniCodeRawWithStats 和专门用例覆盖。
 func runMiniCodeRaw(t *testing.T, binary, baseURL, prompt, stdin string, flags ...string) (string, string, int) {
+	stdout, stderr, code := runMiniCodeRawWithStats(t, binary, baseURL, prompt, stdin, flags...)
+	return stdout, stripStats(stderr), code
+}
+
+// runMiniCodeRawWithStats 启动 minicode 并原样返回输出。
+func runMiniCodeRawWithStats(t *testing.T, binary, baseURL, prompt, stdin string, flags ...string) (string, string, int) {
 	t.Helper()
 	args := append([]string(nil), flags...)
 	if prompt != "" {
@@ -551,6 +590,16 @@ func runMiniCodeRaw(t *testing.T, binary, baseURL, prompt, stdin string, flags .
 		t.Fatalf("run minicode: %v", err)
 	}
 	return stdout.String(), stderr.String(), exitErr.ExitCode()
+}
+
+func stripStats(output string) string {
+	var kept []string
+	for _, line := range strings.SplitAfter(output, "\n") {
+		if !strings.HasPrefix(line, "[统计] ") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "")
 }
 
 // runMiniCode 跑一轮任务并剥掉交互循环的提示符。

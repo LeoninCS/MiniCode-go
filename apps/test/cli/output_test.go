@@ -26,11 +26,18 @@ func TestOutputShowsProcessFinalReplyAndApproval(t *testing.T) {
 	output.ToolDone("bash", agent.ToolCompleted, 1200*time.Millisecond)
 	output.ToolCall(call)
 	output.Message("final answer")
+	output.TaskDone(agent.TaskStats{
+		Duration: 2300 * time.Millisecond, ModelCalls: 2, ToolCalls: 1,
+		InputTokens: 3200, OutputTokens: 540, TotalTokens: 3740, UsageResponses: 2,
+	})
 
 	want := "[turn 1] waiting for model\n" +
 		"[turn 1] calling bash\n" +
 		"[state] bash completed in 1.2s\n" +
-		"tool: bash\narguments: {\"command\":\"go test ./...\"}\nfinal answer\n"
+		"tool: bash\narguments: {\"command\":\"go test ./...\"}\nfinal answer\n" +
+		"\x1b[1m\x1b[36m[统计]\x1b[0m \x1b[32m2.3 秒\x1b[0m \x1b[2m｜\x1b[0m " +
+		"\x1b[34m模型 2 次\x1b[0m \x1b[2m｜\x1b[0m \x1b[34m工具 1 次\x1b[0m \x1b[2m｜\x1b[0m " +
+		"\x1b[32mToken 3,740（输入 3,200 / 输出 540）\x1b[0m\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
@@ -49,6 +56,34 @@ func TestOutputHidesProcessInNonInteractiveMode(t *testing.T) {
 	output.Message("final")
 	if got, want := stdout.String(), "final\n"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestOutputTaskStatsInNonInteractiveMode(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stats agent.TaskStats
+		want  string
+	}{
+		{
+			name:  "unavailable usage",
+			stats: agent.TaskStats{Duration: 500 * time.Microsecond, ModelCalls: 1},
+			want:  "[统计] <1 毫秒 ｜ 模型 1 次 ｜ 工具 0 次 ｜ Token 不可用\n",
+		},
+		{
+			name:  "partial usage",
+			stats: agent.TaskStats{Duration: 1250 * time.Millisecond, ModelCalls: 2, ToolCalls: 3, InputTokens: 10000, OutputTokens: 5000, TotalTokens: 15000, UsageResponses: 1},
+			want:  "[统计] 1.3 秒 ｜ 模型 2 次 ｜ 工具 3 次 ｜ Token 15,000（输入 10,000 / 输出 5,000）（部分统计）\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			output := cli.NewOutput(&stdout, &stderr, false)
+			output.TaskDone(tc.stats)
+			if stdout.Len() != 0 || stderr.String() != tc.want {
+				t.Fatalf("stdout = %q, stderr = %q, want stderr %q", stdout.String(), stderr.String(), tc.want)
+			}
+		})
 	}
 }
 

@@ -60,7 +60,7 @@ func TestClient_Chat_Success(t *testing.T) {
 				Message:      provider.NewMessage(provider.RoleAssistant, "hello back", ""),
 				FinishReason: "stop",
 			}},
-			Usage: provider.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
+			Usage: &provider.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
 		})
 	})
 
@@ -73,7 +73,7 @@ func TestClient_Chat_Success(t *testing.T) {
 	if got := resp.Content(); got != "hello back" {
 		t.Errorf("unexpected content: %q", got)
 	}
-	if resp.Usage.TotalTokens != 3 {
+	if resp.Usage == nil || resp.Usage.TotalTokens != 3 {
 		t.Errorf("unexpected usage: %+v", resp.Usage)
 	}
 }
