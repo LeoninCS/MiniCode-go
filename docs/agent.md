@@ -70,8 +70,8 @@ apps/                                # Go module 根(不是仓库根)
 
 - **Provider 协议 = OpenAI 兼容**(`/chat/completions`、Bearer、application/json)。理由:DeepSeek / MiniMax / Moonshot / 智谱 / 硅基流动 / OpenAI 都兼容,Day 10 抽象时切换成本最低
 - **API 错误双格式兼容**:OpenAI 嵌套 `{"error": {...}}` 与平铺,非 JSON 退化为带状态码的通用错误
-- **环境变量**:`MINICODE_API_KEY` / `MINICODE_BASE_URL` / `MINICODE_MODEL`;flag 优先
-- **配置模板**:仓库根 `.env.example`(不进 git,本地 `.env`),列出 env var + 常用服务的 BaseURL/Model 示例值;不引入第三方配置库
+- **当前配置（2026-10-08 调整）**：CLI 只读取启动目录下固定路径 `apps/config/config.toml`；模型字段 `api_key`、`base_url`、`name` 必填，Langfuse 配置可选。旧 `.env`、配置环境变量和模型配置 flag 已移除，详见 [configuration.md](configuration.md)
+- **配置校验**：使用严格 TOML 解析，拒绝未知字段；解析错误不回显可能含密钥的原始配置行
 - **目录布局 = `apps/`**:monorepo-friendly。本次实施观察到 `go mod tidy` 后目录被外部自动化从根 cmd/ internal/ 重组为 apps/,agent 接受,后续发现再改动先停下报告
 
 ### Day 2(2026-08-29)
@@ -107,6 +107,13 @@ apps/                                # Go module 根(不是仓库根)
 - **取消语义**：Ctrl+C 退出整个会话；任务返回后根 context 已取消时，不再启动下一次输入 goroutine，避免退出时重新进入 raw 模式。
 - **输出生命周期**：运行过程放在备用屏幕，最终回答前及错误、超时、取消路径均恢复主屏幕；非交互模式保留完整输出。
 - **验证边界**：除提交内容外，还需覆盖 PTY 中的实际显示与光标，以及进程退出后的键盘协议和屏幕恢复；实现总结和测试入口见 [cli.md](cli.md)。
+
+### Day 8 任务统计（2026-10-08）
+
+- **统计范围**：每次 `Session.Turn` 独立累计耗时、模型调用次数、进入处理流程的工具调用次数，以及模型响应中存在的 `usage`；达到轮数上限后的总结请求也计入模型调用和 token。
+- **缺失语义**：`ChatResponse.Usage` 可空；全部缺失时显示 `Token 不可用`，部分缺失时只累计已有数据并标记 `（部分统计）`，不在本地估算未知 token。
+- **总数兼容**：若服务返回输入或输出 token、但 `total_tokens` 为零，则使用输入与输出之和补全该响应的总数。
+- **输出边界**：交互模式把统计写入 stdout；非交互模式写入 stderr，保证 stdout 仍可作为纯模型回答进入管道。成功、失败、取消和超时路径都必须发送任务统计。
 
 ## 6. 已知陷阱
 

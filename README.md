@@ -67,41 +67,40 @@ minicode -h
 
 ### 3. 配置模型服务
 
-MiniCode 需要一个兼容 OpenAI `/chat/completions` 接口的模型服务。复制配置模板并填写自己的 API Key、Base URL 和模型名：
+MiniCode 需要一个兼容 OpenAI `/chat/completions` 接口的模型服务。配置只从**启动目录下的固定路径** `apps/config/config.toml` 读取，不再读取 `.env`、`MINICODE_*` / `LANGFUSE_*` 环境变量，也不支持通过 CLI 参数覆盖模型配置。
+
+在本仓库根目录运行时，可复制模板：
 
 ```bash
-cp .env.example .env
-$EDITOR .env
-source .env
+cp apps/config/config.example.toml apps/config/config.toml
+$EDITOR apps/config/config.toml
 ```
 
-例如使用 DeepSeek 时，`.env` 可以填写：
+使用 DeepSeek 的最小配置如下：
 
-```bash
-MINICODE_API_KEY=你的_API_Key
-MINICODE_BASE_URL=https://api.deepseek.com/v1
-MINICODE_MODEL=deepseek-chat
+```toml
+[model]
+api_key = "你的_API_Key"
+base_url = "https://api.deepseek.com/v1"
+name = "deepseek-chat"
 ```
 
-请勿将 `.env` 或真实 API Key 提交到 Git；本项目已在 `.gitignore` 中忽略 `.env`。
+`model.api_key`、`model.base_url` 和 `model.name` 均为必填项。`config.toml` 包含密钥，已被 `.gitignore` 忽略，请勿提交到 Git。
 
-可选地接入 Langfuse。配置后会上传完整的用户输入、模型请求与响应、工具参数与结果、token 用量、耗时和错误：
+> MiniCode 的工作区就是启动命令时的目录。因此在其他项目中运行时，需要在该项目中创建 `apps/config/config.toml`；配置文件路径目前不可自定义。
 
-```bash
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_HOST=https://cloud.langfuse.com
+可选地接入 Langfuse：
+
+```toml
+[langfuse]
+public_key = "pk-lf-..."
+secret_key = "sk-lf-..."
+host = "https://cloud.langfuse.com"
 ```
 
-`LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY` 必须同时填写；未填写时追踪保持关闭。自部署用户将 `LANGFUSE_HOST` 改为实例根地址即可。由于上传内容可能包含源代码、命令输出和敏感信息，请仅在可信的 Langfuse 项目中启用。
+`public_key` 和 `secret_key` 同时留空或省略整个 `[langfuse]` 表时关闭追踪；启用时必须同时填写两项。`host` 留空时使用 Langfuse Cloud，自部署用户填写实例根地址。
 
-Windows PowerShell 可以直接设置当前终端会话的环境变量：
-
-```powershell
-$env:MINICODE_API_KEY="你的_API_Key"
-$env:MINICODE_BASE_URL="https://api.deepseek.com/v1"
-$env:MINICODE_MODEL="deepseek-chat"
-```
+启用后，MiniCode 会通过 OTLP/HTTP 上传完整的用户输入、模型请求与响应、工具参数与结果、token 用量、耗时和错误。数据可能包含源代码、命令输出和其他敏感信息，请仅连接可信的 Langfuse 项目。详细配置、错误排查和数据范围见 [`docs/configuration.md`](docs/configuration.md)。
 
 ### 4. 在自己的项目中启动
 
@@ -154,7 +153,7 @@ minicode
 - ✅ Day 5：系统 Prompt + 默认 CLI 输入循环 + 会话内跨轮记忆；
 - ✅ Day 6：已完成工具输出截断、500 轮上限、单轮超时、模型单轮输出限制和副作用工具执行前审批；不提供危险命令黑名单或硬拦截；
 - ✅ Day 7：已完成 Ctrl+C / SIGTERM 中断、context 取消链路，以及中断、超时和普通失败的提示区分；
-- ⬜ Day 8：token 统计和过程可视化；
+- ✅ Day 8：已完成 token 统计和过程可视化；
 - ⬜ Day 9：Session 持久化与恢复（当前仅进程内跨轮记忆）；
 - ⬜ Day 10：Provider 抽象层；
 - ⬜ Day 11：SSE 流式解析；
@@ -163,6 +162,14 @@ minicode
 - ⬜ Day 14：压缩切分点合法性处理。
 
 ## 最近更新
+
+### 2026-10-08
+
+- 完成 Day 8 可观测性增强：逐任务汇总模型调用、工具调用、输入/输出/总 token 与累计耗时；
+- 交互模式在标准输出展示统计，管道模式改写标准错误，避免污染最终回答；模型未返回 `usage` 时明确显示不可用，部分响应缺失时标记为 `partial`；
+- 配置入口统一为启动目录下的 `apps/config/config.toml`，移除旧 `.env`、配置环境变量和模型配置 flag；
+- 新增可选的 Langfuse OTLP/HTTP 链路追踪，覆盖用户轮次、模型调用、工具调用、token 用量、耗时和错误；
+- 增加 [`docs/configuration.md`](docs/configuration.md)，说明配置字段、敏感数据范围与故障排查。
 
 ### 2026-10-06
 
@@ -203,7 +210,8 @@ minicode
 - [`docs/plan.md`](docs/plan.md)：按天拆分的开发任务和完成状态；
 - [`docs/agent.md`](docs/agent.md)：Agent 操作规范（硬边界、已固化决策、已知陷阱），用于防止多 Day 实施中的细节漂移。
 - [`docs/tools.md`](docs/tools.md)：工具体系（目录职责、内置工具、注册表机制与决策记录）。
-- [`docs/cli.md`](docs/cli.md)：CLI 多行编辑、终端输出、Ctrl+C 修复与验证总结。
+- [`docs/cli.md`](docs/cli.md)：CLI 多行编辑、终端输出、Ctrl+C 修复与验证总结；
+- [`docs/configuration.md`](docs/configuration.md)：TOML 模型配置、Langfuse 追踪、数据范围与故障排查。
 
 ## 目录结构
 
@@ -215,6 +223,7 @@ MiniCode-go/
 │   ├── plan.md
 │   ├── agent.md                       # Agent 操作规范
 │   ├── cli.md                         # CLI 交互与终端实现总结
+│   ├── configuration.md               # TOML 配置与 Langfuse 追踪
 │   └── tools.md                       # 工具体系
 └── apps/                              # Go module: github.com/MiniCode-go/minicode
     ├── go.mod
@@ -266,9 +275,9 @@ MiniCode-go/
 # 构建
 go -C apps build -o ../bin/minicode ./cmd/minicode
 
-# 准备配置(任选一种)
-cp .env.example .env && $EDITOR .env && source .env   # 一次配置,反复使用
-# 或者直接 export 三行(见 .env.example 里的常用值)
+# 准备配置：固定从启动目录的 apps/config/config.toml 读取
+cp apps/config/config.example.toml apps/config/config.toml
+$EDITOR apps/config/config.toml
 ```
 
 ```bash
@@ -279,18 +288,27 @@ cp .env.example .env && $EDITOR .env && source .env   # 一次配置,反复使�
 printf '分析这个项目\n运行测试\n' | ./bin/minicode
 
 # /exit 和 /quit 均可结束交互会话
-
-# 也可以完全用 flag 覆盖配置（flag 优先级最高）
-./bin/minicode -api-key sk-... -base-url https://api.example.com/v1 -model x
 ```
 
-完整配置项与示例值见仓库根 [`.env.example`](.env.example)。`.env` 不进 git,放本地。
+完整字段、Langfuse 追踪和错误排查见 [`docs/configuration.md`](docs/configuration.md)。模型配置不能通过环境变量或 CLI flag 覆盖；`apps/config/config.toml` 含有密钥且已被 Git 忽略。
 
 每个 Session 启动时会注入系统 Prompt，其中包含当前工作区、文件路径边界、工具说明、先读后改、修改后验证等规则。同一进程中的用户消息、模型回复、工具调用和工具结果会持续累积，因此后续问题可以引用前面的内容；会话尚不会保存到磁盘，退出程序后不能恢复。
 
 终端中的模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具调用信息和命令输出原样显示。
 
-当标准输入和标准输出都连接终端时，运行过程显示在备用屏幕中；收到最终回答、发生错误或取消任务时恢复原屏幕。最终回答留在主屏幕，中间工具输出不写入主屏幕的滚动历史。非交互模式保留完整过程输出，便于管道处理和日志重定向。
+当标准输入和标准输出都连接终端时，运行过程显示在备用屏幕中；收到最终回答、发生错误或取消任务时恢复原屏幕。最终回答留在主屏幕，中间工具输出不写入主屏幕的滚动历史。每项任务结束后会显示一行累计统计，例如：
+
+```text
+[统计] 2.3 秒 ｜ 模型 2 次 ｜ 工具 1 次 ｜ Token 3,740（输入 3,200 / 输出 540）
+```
+
+统计包括任务耗时、模型调用次数、工具调用次数，以及模型响应中 `usage` 的输入、输出和总 token 之和。模型完全不返回 `usage` 时显示 `Token 不可用`；只有部分模型响应携带 `usage` 时在统计末尾显示 `（部分统计）`。若服务返回的 `total_tokens` 为 `0`，但输入或输出 token 非零，MiniCode 会用两者之和补全本次总数。
+
+非交互模式下最终回答仍单独写入标准输出，任务统计写入标准错误，便于将回答通过管道交给其他程序：
+
+```bash
+minicode "分析这个项目" >answer.md 2>run.log
+```
 
 CLI 支持普通文本回复和 `bash` / `read` / `write` / `edit` 四个工具。模型请求工具时，会先打印调用信息；`bash`、`write`、`edit` 默认等待用户批准，`read` 可直接执行。批准后程序展示输出并把结果回传模型；拒绝时不执行工具，并把拒绝结果回传模型。使用 `--yes` 可以自动批准所有副作用工具调用，例如：
 
@@ -304,7 +322,7 @@ arguments: {"command":"go test ./..."}
 每项任务最多进行 500 轮可使用工具的模型请求。达到上限后，再请求一次不带工具的最终总结；若总结失败或为空，则输出停止说明。达到上限仍返回非零退出码。每次模型调用都会通过 OpenAI 兼容的 `max_tokens` 参数限制输出，默认上限为 16384 tokens；该值由 `provider.Config.MaxOutputTokens` 统一配置，普通请求和最终总结均使用同一限制。`-timeout` 默认 1 小时，覆盖模型请求、命令执行和最终总结。Ctrl+C 或超时会终止当前命令进程组；单次工具输出最多保留 64 KiB，并标记截断。命令失败的输出和错误也会回传模型。
 
 ```bash
-# 从项目根目录启动（已有环境变量配置），然后在交互界面中输入任务
+# 从项目根目录启动（已准备 apps/config/config.toml），然后在交互界面中输入任务
 go -C apps run ./cmd/minicode
 
 # 只运行测试目录，避免显示源码包的 [no test files]
