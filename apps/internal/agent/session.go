@@ -160,6 +160,8 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 	s.messages = append(s.messages, provider.NewMessage(provider.RoleUser, input, ""))
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
+		turnNumber := turn + 1
+		output.ModelStart(turnNumber)
 		resp, err := s.client.Chat(ctx, provider.ChatRequest{
 			Messages: s.messages,
 			Tools:    toolDefinitions,
@@ -186,14 +188,18 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 		}
 		assistant := len(s.messages) - 1
 		for _, call := range toolCalls {
+			output.ToolStart(turnNumber, call)
+			started := time.Now()
 			if requiresApproval(call.Function.Name) && s.approver != nil {
 				approved, err := s.approver.Approve(ctx, content, call)
 				if err != nil {
+					output.ToolDone(call.Function.Name, ToolCanceled, time.Since(started))
 					// 未为当前 assistant 的全部 tool_calls 生成结果时，整轮必须回滚。
 					s.messages = s.messages[:assistant]
 					return err
 				}
 				if !approved {
+					output.ToolDone(call.Function.Name, ToolDenied, time.Since(started))
 					result := "tool execution denied by user"
 					s.messages = append(s.messages, provider.NewMessage(provider.RoleTool, result, call.ID))
 					continue
@@ -201,14 +207,18 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 			}
 			result, err := s.registry.Execute(ctx, call, io.Discard)
 			if ctx.Err() != nil {
+				output.ToolDone(call.Function.Name, ToolCanceled, time.Since(started))
 				// assistant 消息带着 tool_calls 进入历史,缺任何一条工具结果都会让
 				// 下一次请求非法,所以整轮回滚而不是留下半轮。
 				s.messages = s.messages[:assistant]
 				return ctx.Err()
 			}
+			status := ToolCompleted
 			if err != nil {
+				status = ToolFailed
 				result += "\nerror: " + err.Error()
 			}
+			output.ToolDone(call.Function.Name, status, time.Since(started))
 			s.messages = append(s.messages, provider.NewMessage(provider.RoleTool, result, call.ID))
 		}
 	}

@@ -6,27 +6,49 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/MiniCode-go/minicode/internal/agent"
 	"github.com/MiniCode-go/minicode/internal/cli"
 	"github.com/MiniCode-go/minicode/internal/provider"
 )
 
-func TestOutputShowsFinalReplyAndApprovalOnly(t *testing.T) {
+func TestOutputShowsProcessFinalReplyAndApproval(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	output := cli.NewOutput(&stdout, &stderr, true)
-
-	output.ToolCall(provider.ToolCall{Function: provider.FunctionCall{
+	call := provider.ToolCall{Function: provider.FunctionCall{
 		Name:      "bash",
 		Arguments: `{"command":"go test ./..."}`,
-	}})
+	}}
+
+	output.ModelStart(1)
+	output.ToolStart(1, call)
+	output.ToolDone("bash", agent.ToolCompleted, 1200*time.Millisecond)
+	output.ToolCall(call)
 	output.Message("final answer")
 
-	want := "tool: bash\narguments: {\"command\":\"go test ./...\"}\nfinal answer\n"
+	want := "[turn 1] waiting for model\n" +
+		"[turn 1] calling bash\n" +
+		"[state] bash completed in 1.2s\n" +
+		"tool: bash\narguments: {\"command\":\"go test ./...\"}\nfinal answer\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestOutputHidesProcessInNonInteractiveMode(t *testing.T) {
+	var stdout bytes.Buffer
+	output := cli.NewOutput(&stdout, &bytes.Buffer{}, false)
+	call := provider.ToolCall{Function: provider.FunctionCall{Name: "read"}}
+	output.ModelStart(1)
+	output.ToolStart(1, call)
+	output.ToolDone("read", agent.ToolFailed, time.Millisecond)
+	output.Message("final")
+	if got, want := stdout.String(), "final\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -60,6 +61,15 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 	wantEvents := []string{"message:# 已收到错误"}
 	if !reflect.DeepEqual(output.events, wantEvents) {
 		t.Fatalf("events = %q, want %q", output.events, wantEvents)
+	}
+	wantProcess := []string{
+		"model-start:1",
+		"tool-start:1:bash",
+		"tool-done:bash:failed",
+		"model-start:2",
+	}
+	if !reflect.DeepEqual(output.processEvents, wantProcess) {
+		t.Fatalf("process events = %q, want %q", output.processEvents, wantProcess)
 	}
 	if len(output.toolErrors) != 0 {
 		t.Fatalf("tool errors should stay hidden: %v", output.toolErrors)
@@ -364,12 +374,25 @@ func newSession(t *testing.T, client *provider.Client) *agent.Session {
 
 type recordingOutput struct {
 	bytes.Buffer
-	events     []string
-	toolErrors []error
+	events        []string
+	processEvents []string
+	toolErrors    []error
 }
 
 func (o *recordingOutput) Message(content string) {
 	o.events = append(o.events, "message:"+content)
+}
+
+func (o *recordingOutput) ModelStart(turn int) {
+	o.processEvents = append(o.processEvents, fmt.Sprintf("model-start:%d", turn))
+}
+
+func (o *recordingOutput) ToolStart(turn int, call provider.ToolCall) {
+	o.processEvents = append(o.processEvents, fmt.Sprintf("tool-start:%d:%s", turn, call.Function.Name))
+}
+
+func (o *recordingOutput) ToolDone(name string, status agent.ToolStatus, _ time.Duration) {
+	o.processEvents = append(o.processEvents, fmt.Sprintf("tool-done:%s:%s", name, status))
 }
 
 func (o *recordingOutput) ToolError(err error) {
