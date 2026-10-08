@@ -12,6 +12,9 @@ import (
 
 	"github.com/MiniCode-go/minicode/internal/provider"
 	"github.com/MiniCode-go/minicode/internal/tools"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -156,7 +159,20 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 //
 // 无论成功失败,历史都保持可以继续发送的状态:
 // 工具失败会作为结果回传给模型,任务被取消时丢弃未配对的半轮消息。
-func (s *Session) Turn(ctx context.Context, input string, output Output) error {
+func (s *Session) Turn(ctx context.Context, input string, output Output) (turnErr error) {
+	ctx, turnSpan := s.client.Tracer().Start(ctx, "minicode turn",
+		trace.WithAttributes(
+			attribute.String("langfuse.observation.type", "span"),
+			attribute.String("langfuse.observation.input", input),
+		),
+	)
+	defer func() {
+		if turnErr != nil {
+			turnSpan.RecordError(turnErr)
+			turnSpan.SetStatus(codes.Error, turnErr.Error())
+		}
+		turnSpan.End()
+	}()
 	s.messages = append(s.messages, provider.NewMessage(provider.RoleUser, input, ""))
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
@@ -179,6 +195,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 		}
 		// 带工具调用的文本属于模型的中间过程，不展示；只有不再调用工具时才输出最终回复。
 		if content != "" && len(toolCalls) == 0 {
+			turnSpan.SetAttributes(attribute.String("langfuse.observation.output", content))
 			output.Message(content)
 		}
 		// assistant 消息无论是否带工具调用都要进历史,否则下一轮模型看不到自己刚说过什么。
@@ -190,9 +207,20 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 		for _, call := range toolCalls {
 			output.ToolStart(turnNumber, call)
 			started := time.Now()
+			toolCtx, toolSpan := s.client.Tracer().Start(ctx, "tool "+call.Function.Name,
+				trace.WithAttributes(
+					attribute.String("langfuse.observation.type", "tool"),
+					attribute.String("tool.name", call.Function.Name),
+					attribute.String("tool.call.id", call.ID),
+					attribute.String("langfuse.observation.input", call.Function.Arguments),
+				),
+			)
 			if requiresApproval(call.Function.Name) && s.approver != nil {
-				approved, err := s.approver.Approve(ctx, content, call)
+				approved, err := s.approver.Approve(toolCtx, content, call)
 				if err != nil {
+					toolSpan.RecordError(err)
+					toolSpan.SetStatus(codes.Error, err.Error())
+					toolSpan.End()
 					output.ToolDone(call.Function.Name, ToolCanceled, time.Since(started))
 					// 未为当前 assistant 的全部 tool_calls 生成结果时，整轮必须回滚。
 					s.messages = s.messages[:assistant]
@@ -201,12 +229,17 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 				if !approved {
 					output.ToolDone(call.Function.Name, ToolDenied, time.Since(started))
 					result := "tool execution denied by user"
+					toolSpan.SetAttributes(attribute.String("langfuse.observation.output", result))
+					toolSpan.End()
 					s.messages = append(s.messages, provider.NewMessage(provider.RoleTool, result, call.ID))
 					continue
 				}
 			}
-			result, err := s.registry.Execute(ctx, call, io.Discard)
+			result, err := s.registry.Execute(toolCtx, call, io.Discard)
 			if ctx.Err() != nil {
+				toolSpan.RecordError(ctx.Err())
+				toolSpan.SetStatus(codes.Error, ctx.Err().Error())
+				toolSpan.End()
 				output.ToolDone(call.Function.Name, ToolCanceled, time.Since(started))
 				// assistant 消息带着 tool_calls 进入历史,缺任何一条工具结果都会让
 				// 下一次请求非法,所以整轮回滚而不是留下半轮。
@@ -217,7 +250,11 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) error {
 			if err != nil {
 				status = ToolFailed
 				result += "\nerror: " + err.Error()
+				toolSpan.RecordError(err)
+				toolSpan.SetStatus(codes.Error, err.Error())
 			}
+			toolSpan.SetAttributes(attribute.String("langfuse.observation.output", result))
+			toolSpan.End()
 			output.ToolDone(call.Function.Name, status, time.Since(started))
 			s.messages = append(s.messages, provider.NewMessage(provider.RoleTool, result, call.ID))
 		}

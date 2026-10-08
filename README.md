@@ -85,6 +85,16 @@ MINICODE_MODEL=deepseek-chat
 
 请勿将 `.env` 或真实 API Key 提交到 Git；本项目已在 `.gitignore` 中忽略 `.env`。
 
+可选地接入 Langfuse。配置后会上传完整的用户输入、模型请求与响应、工具参数与结果、token 用量、耗时和错误：
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+`LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY` 必须同时填写；未填写时追踪保持关闭。自部署用户将 `LANGFUSE_HOST` 改为实例根地址即可。由于上传内容可能包含源代码、命令输出和敏感信息，请仅在可信的 Langfuse 项目中启用。
+
 Windows PowerShell 可以直接设置当前终端会话的环境变量：
 
 ```powershell

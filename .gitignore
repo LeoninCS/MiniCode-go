@@ -1,2 +1,2 @@
-.env
+/apps/config/config.toml
 /bin/

@@ -1,0 +1,13 @@
+# 从项目根目录运行时，读取 apps/config/config.toml。
+# 复制此文件为同目录的 config.toml 并填写配置。
+
+[model]
+api_key = ""
+base_url = "https://api.deepseek.com/v1"
+name = "deepseek-chat"
+
+# 可选；public_key 和 secret_key 同时留空时关闭追踪。
+[langfuse]
+public_key = ""
+secret_key = ""
+host = "https://cloud.langfuse.com"

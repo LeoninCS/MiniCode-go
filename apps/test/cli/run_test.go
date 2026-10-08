@@ -531,13 +531,13 @@ func buildMiniCode(t *testing.T) string {
 // prompt 非空时作为位置参数(即循环的第一轮输入),stdin 提供之后读到的内容。
 func runMiniCodeRaw(t *testing.T, binary, baseURL, prompt, stdin string, flags ...string) (string, string, int) {
 	t.Helper()
-	args := []string{"-api-key", "test-key", "-base-url", baseURL, "-model", "test-model"}
-	args = append(args, flags...)
+	args := append([]string(nil), flags...)
 	if prompt != "" {
 		args = append(args, prompt)
 	}
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = t.TempDir()
+	writeModelConfig(t, cmd.Dir, baseURL)
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

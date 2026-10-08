@@ -55,12 +55,13 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 			t.Cleanup(server.Close)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			args := []string{"-api-key", "test-key", "-base-url", server.URL, "-model", "test-model"}
+			var args []string
 			if tc.initial {
 				args = append(args, "request")
 			}
 			command := exec.CommandContext(ctx, binary, args...)
 			command.Dir = t.TempDir()
+			writeModelConfig(t, command.Dir, server.URL)
 			command.Env = append(os.Environ(), "TERM=xterm-256color")
 			terminal, err := pty.StartWithSize(command, &pty.Winsize{Cols: 60, Rows: 12})
 			if err != nil {

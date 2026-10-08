@@ -10,6 +10,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -30,6 +34,8 @@ type Config struct {
 	MaxOutputTokens int
 	// HTTPClient 可选,允许调用方注入自定义 transport(例如测试或代理)。
 	HTTPClient *http.Client
+	// Tracer 可选，用于把完整模型输入、输出、token 和错误上报到 Langfuse。
+	Tracer trace.Tracer
 }
 
 // Client 是对 OpenAI 兼容 /chat/completions 端点的轻量封装。
@@ -52,6 +58,14 @@ func NewClient(cfg Config) *Client {
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	return &Client{cfg: cfg, http: cfg.HTTPClient}
+}
+
+// Tracer 返回模型调用使用的 tracer；未配置时返回 no-op tracer。
+func (c *Client) Tracer() trace.Tracer {
+	if c == nil || c.cfg.Tracer == nil {
+		return trace.NewNoopTracerProvider().Tracer("minicode")
+	}
+	return c.cfg.Tracer
 }
 
 // DefaultModel 返回 Client 构造时配置的默认模型名。
@@ -91,9 +105,13 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		return nil, fmt.Errorf("provider: marshal request: %w", err)
 	}
 
+	ctx, span := startGenerationSpan(ctx, c.cfg.Tracer, model, body)
+	defer span.End()
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.cfg.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
+		recordSpanError(span, err)
 		return nil, fmt.Errorf("provider: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -102,24 +120,62 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
+		recordSpanError(span, err)
 		return nil, fmt.Errorf("provider: http call: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
+		recordSpanError(span, err)
 		return nil, fmt.Errorf("provider: read response: %w", err)
 	}
+	span.SetAttributes(
+		attribute.String("gen_ai.response.raw", string(raw)),
+		attribute.String("langfuse.observation.output", string(raw)),
+	)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, parseErrorResponse(resp.StatusCode, raw)
+		err := parseErrorResponse(resp.StatusCode, raw)
+		recordSpanError(span, err)
+		return nil, err
 	}
 
 	var out ChatResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
+		recordSpanError(span, err)
 		return nil, fmt.Errorf("provider: decode response: %w (body=%q)", err, truncateForLog(raw))
 	}
+	span.SetAttributes(
+		attribute.String("gen_ai.response.id", out.ID),
+		attribute.String("gen_ai.response.model", out.Model),
+		attribute.Int("gen_ai.usage.input_tokens", out.Usage.PromptTokens),
+		attribute.Int("gen_ai.usage.output_tokens", out.Usage.CompletionTokens),
+		attribute.Int("gen_ai.usage.total_tokens", out.Usage.TotalTokens),
+	)
 	return &out, nil
+}
+
+func startGenerationSpan(ctx context.Context, tracer trace.Tracer, model string, request []byte) (context.Context, trace.Span) {
+	if tracer == nil {
+		tracer = trace.NewNoopTracerProvider().Tracer("minicode/provider")
+	}
+	return tracer.Start(ctx, "chat "+model,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("langfuse.observation.type", "generation"),
+			attribute.String("gen_ai.operation.name", "chat"),
+			attribute.String("gen_ai.provider.name", "openai-compatible"),
+			attribute.String("gen_ai.request.model", model),
+			attribute.String("gen_ai.request.raw", string(request)),
+			attribute.String("langfuse.observation.input", string(request)),
+		),
+	)
+}
+
+func recordSpanError(span trace.Span, err error) {
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
 // parseErrorResponse 尝试将非 2xx 响应解析为 APIError,
