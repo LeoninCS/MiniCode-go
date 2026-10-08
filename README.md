@@ -154,7 +154,7 @@ minicode
 - ✅ Day 6：已完成工具输出截断、500 轮上限、单轮超时、模型单轮输出限制和副作用工具执行前审批；不提供危险命令黑名单或硬拦截；
 - ✅ Day 7：已完成 Ctrl+C / SIGTERM 中断、context 取消链路，以及中断、超时和普通失败的提示区分；
 - ✅ Day 8：已完成 token 统计和过程可视化；
-- ⬜ Day 9：Session 持久化与恢复（当前仅进程内跨轮记忆）；
+- ✅ Day 9：已支持通过 `--session` 将完整会话安全保存到 JSON 文件并跨进程恢复；
 - ⬜ Day 10：Provider 抽象层；
 - ⬜ Day 11：SSE 流式解析；
 - ⬜ Day 12：tool_calls 参数分片累积与打字机输出；
@@ -162,6 +162,13 @@ minicode
 - ⬜ Day 14：压缩切分点合法性处理。
 
 ## 最近更新
+
+### 2026-10-09
+
+- 完成 Day 9 Session 持久化：`--session` 可创建或恢复版本化 JSON 会话文件；
+- 保存用户消息、模型回复、工具调用、工具结果、工作区和上一轮状态，系统 Prompt 在恢复时重新生成；
+- 使用 `0600` 临时文件和原子重命名写入，严格拒绝损坏文件、不兼容版本、工作区不匹配及不完整工具消息；
+- 使用方法、安全边界和文件格式见 [`docs/session.md`](docs/session.md)。
 
 ### 2026-10-08
 
@@ -211,7 +218,8 @@ minicode
 - [`docs/agent.md`](docs/agent.md)：Agent 操作规范（硬边界、已固化决策、已知陷阱），用于防止多 Day 实施中的细节漂移。
 - [`docs/tools.md`](docs/tools.md)：工具体系（目录职责、内置工具、注册表机制与决策记录）。
 - [`docs/cli.md`](docs/cli.md)：CLI 多行编辑、终端输出、Ctrl+C 修复与验证总结；
-- [`docs/configuration.md`](docs/configuration.md)：TOML 模型配置、Langfuse 追踪、数据范围与故障排查。
+- [`docs/configuration.md`](docs/configuration.md)：TOML 模型配置、Langfuse 追踪、数据范围与故障排查；
+- [`docs/session.md`](docs/session.md)：Session 文件格式、恢复方式、安全边界和错误处理。
 
 ## 目录结构
 
@@ -224,6 +232,7 @@ MiniCode-go/
 │   ├── agent.md                       # Agent 操作规范
 │   ├── cli.md                         # CLI 交互与终端实现总结
 │   ├── configuration.md               # TOML 配置与 Langfuse 追踪
+│   ├── session.md                     # Session 持久化与恢复
 │   └── tools.md                       # 工具体系
 └── apps/                              # Go module: github.com/MiniCode-go/minicode
     ├── go.mod
@@ -234,10 +243,12 @@ MiniCode-go/
     │   ├── input_display.go          # 折行、光标定位与滚动显示
     │   ├── output.go                 # 运行过程与最终回答展示
     │   └── markdown.go               # 终端检测与 Markdown 渲染
-    ├── internal/agent/                 # Session、模型循环、消息历史与系统 Prompt
-    │   ├── session.go                  # 交互会话与 Agent Loop
+    ├── internal/agent/                 # Agent Loop、模型调用与工具执行
+    │   ├── run.go                      # Session、交互循环与持久化接入
     │   ├── prompt.go                   # 系统 Prompt
     │   └── output.go                   # Agent 输出接口
+    ├── internal/session/               # Session 快照格式、校验和文件存储
+    │   └── store.go                    # JSON 读取与原子写入
     ├── internal/tools/                 # 工具实现 + 注册机制
     │   ├── registry.go                # Tool、ToolRegistry、参数公共校验
     │   ├── bash.go                    # bash 执行、输出截断与取消
@@ -292,7 +303,14 @@ printf '分析这个项目\n运行测试\n' | ./bin/minicode
 
 完整字段、Langfuse 追踪和错误排查见 [`docs/configuration.md`](docs/configuration.md)。模型配置不能通过环境变量或 CLI flag 覆盖；`apps/config/config.toml` 含有密钥且已被 Git 忽略。
 
-每个 Session 启动时会注入系统 Prompt，其中包含当前工作区、文件路径边界、工具说明、先读后改、修改后验证等规则。同一进程中的用户消息、模型回复、工具调用和工具结果会持续累积，因此后续问题可以引用前面的内容；会话尚不会保存到磁盘，退出程序后不能恢复。
+每个 Session 启动时会注入系统 Prompt，其中包含当前工作区、文件路径边界、工具说明、先读后改、修改后验证等规则。同一进程中的用户消息、模型回复、工具调用和工具结果会持续累积，因此后续问题可以引用前面的内容。使用 `--session` 可将历史保存到本地 JSON，并在同一工作区的后续进程中恢复：
+
+```bash
+minicode --session .minicode-session.json "分析这个项目"
+minicode --session .minicode-session.json "继续刚才的任务"
+```
+
+Session 文件可能包含源码和命令输出等敏感信息，请勿提交到 Git。详细格式和限制见 [`docs/session.md`](docs/session.md)。
 
 终端中的模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具调用信息和命令输出原样显示。
 
