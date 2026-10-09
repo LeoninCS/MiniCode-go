@@ -23,13 +23,24 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	var (
-		timeout = fs.Duration("timeout", time.Hour, "单轮任务的超时时间(含模型请求和命令执行)")
-		yes     = fs.Bool("yes", false, "自动批准 bash、write、edit 工具调用")
+		timeout   = fs.Duration("timeout", time.Hour, "单轮任务的超时时间(含模型请求和命令执行)")
+		yes       = fs.Bool("yes", false, "自动批准 bash、write、edit 工具调用")
+		sessionID = fs.String("session", "", "按 ID 恢复当前工作区的会话（默认新建并自动保存）")
 	)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
+		return 2
+	}
+	sessionSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "session" {
+			sessionSet = true
+		}
+	})
+	if sessionSet && *sessionID == "" {
+		_, _ = fmt.Fprintln(stderr, "minicode: --session requires a non-empty ID")
 		return 2
 	}
 
@@ -82,7 +93,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}()
 
 	approver := &toolApprover{input: input, output: output, autoApprove: *yes}
-	session, err := agent.NewSession(client, approver)
+	session, err := agent.OpenSessionByID(client, approver, *sessionID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
 		return 1
@@ -92,6 +103,11 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
 		}
 	}()
+	writer := stderr
+	if interactive {
+		writer = stdout
+	}
+	_, _ = fmt.Fprintln(writer, "[会话] "+session.ID())
 
 	// 位置参数作为第一轮输入，之后继续从终端编辑器或管道读取。
 	return session.Run(ctx, output, fs.Args(), *timeout, input)

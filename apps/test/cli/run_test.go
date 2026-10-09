@@ -560,8 +560,8 @@ func buildMiniCode(t *testing.T) string {
 	return binary
 }
 
-// runMiniCodeRaw 启动 minicode，并返回去除任务统计后的输出，供既有行为测试使用。
-// 任务统计本身由 runMiniCodeRawWithStats 和专门用例覆盖。
+// runMiniCodeRaw 启动 minicode，并返回去除会话标识和任务统计后的输出。
+// 这些状态信息由 runMiniCodeRawWithStats 和专门用例覆盖。
 func runMiniCodeRaw(t *testing.T, binary, baseURL, prompt, stdin string, flags ...string) (string, string, int) {
 	stdout, stderr, code := runMiniCodeRawWithStats(t, binary, baseURL, prompt, stdin, flags...)
 	return stdout, stripStats(stderr), code
@@ -595,7 +595,7 @@ func runMiniCodeRawWithStats(t *testing.T, binary, baseURL, prompt, stdin string
 func stripStats(output string) string {
 	var kept []string
 	for _, line := range strings.SplitAfter(output, "\n") {
-		if !strings.HasPrefix(line, "[统计] ") {
+		if !strings.HasPrefix(line, "[统计] ") && !strings.HasPrefix(line, "[会话] ") {
 			kept = append(kept, line)
 		}
 	}

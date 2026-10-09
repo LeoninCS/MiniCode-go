@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/MiniCode-go/minicode/internal/provider"
+	sessionstore "github.com/MiniCode-go/minicode/internal/session"
 	"github.com/MiniCode-go/minicode/internal/tools"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -34,11 +37,14 @@ const (
 // 历史在轮次之间累积,系统 Prompt 始终位于消息链首位。
 // 持有工作区而不是每轮重建,是为了让 edit 工具的"先读后改"校验跨轮有效。
 type Session struct {
-	client   *provider.Client
-	files    *tools.FileTools
-	registry *tools.ToolRegistry
-	approver ToolApprover
-	messages []provider.Message
+	id          string
+	client      *provider.Client
+	files       *tools.FileTools
+	registry    *tools.ToolRegistry
+	approver    ToolApprover
+	workspace   string
+	sessionPath string
+	messages    []provider.Message
 }
 
 // NewSession 打开工作区、注册内置工具,并把系统 Prompt 作为首条消息写入历史。
@@ -64,12 +70,94 @@ func NewSession(client *provider.Client, approver ToolApprover) (*Session, error
 		return nil, err
 	}
 	return &Session{
-		client:   client,
-		files:    files,
-		registry: registry,
-		approver: approver,
-		messages: []provider.Message{provider.NewMessage(provider.RoleSystem, systemPrompt(workspace), "")},
+		id:        uuid.NewString(),
+		client:    client,
+		files:     files,
+		registry:  registry,
+		approver:  approver,
+		workspace: workspace,
+		messages:  []provider.Message{provider.NewMessage(provider.RoleSystem, systemPrompt(workspace), "")},
 	}, nil
+}
+
+// OpenSessionByID 按 ID 恢复工作区内的存档；id 为空时创建并保存新会话。
+// 存档位于 .minicode/sessions/<id>.json，指定的 ID 不存在时返回错误。
+// 恢复只包含已完成的协议消息，不恢复进程、审批状态或文件读取缓存。
+func OpenSessionByID(client *provider.Client, approver ToolApprover, id string) (*Session, error) {
+	s, err := NewSession(client, approver)
+	if err != nil {
+		return nil, err
+	}
+	fail := func(err error) (*Session, error) {
+		_ = s.Close()
+		return nil, err
+	}
+	lookupID := id
+	if lookupID == "" {
+		lookupID = s.id
+	}
+	s.sessionPath, err = sessionstore.Path(s.workspace, lookupID)
+	if err != nil {
+		return fail(err)
+	}
+	if id == "" {
+		if err := os.MkdirAll(filepath.Dir(s.sessionPath), 0o700); err != nil {
+			return fail(fmt.Errorf("create session directory: %w", err))
+		}
+		if err := s.save(nil); err != nil {
+			return fail(err)
+		}
+		return s, nil
+	}
+	snapshot, err := sessionstore.Load(s.sessionPath)
+	if err != nil {
+		return fail(fmt.Errorf("resume session %s: %w", id, err))
+	}
+	if snapshot.ID != "" && snapshot.ID != id {
+		return fail(fmt.Errorf("resume session: ID mismatch: file uses %q, requested %q", snapshot.ID, id))
+	}
+	legacy := snapshot.ID == ""
+	if legacy {
+		snapshot.ID = id
+	}
+	if err := s.restore(snapshot); err != nil {
+		return fail(err)
+	}
+	if legacy {
+		// 旧存档沿用文件名中的 ID，首次恢复时补齐到快照。
+		if err := sessionstore.Save(s.sessionPath, snapshot); err != nil {
+			return fail(err)
+		}
+	}
+	return s, nil
+}
+
+func (s *Session) restore(snapshot sessionstore.Snapshot) error {
+	if snapshot.Workspace != s.workspace {
+		return fmt.Errorf("load session: workspace mismatch: file uses %q, current workspace is %q", snapshot.Workspace, s.workspace)
+	}
+	s.messages = append(s.messages[:1], snapshot.Messages...)
+	if snapshot.ID != "" {
+		s.id = snapshot.ID
+	}
+	return nil
+}
+
+// ID 返回会话的稳定标识；从存档恢复时沿用原来的 ID。
+func (s *Session) ID() string { return s.id }
+
+func (s *Session) save(turnErr error) error {
+	if s.sessionPath == "" {
+		return nil
+	}
+	status := "completed"
+	if turnErr != nil {
+		status = "failed"
+	}
+	return sessionstore.Save(s.sessionPath, sessionstore.Snapshot{
+		Version: sessionstore.Version, ID: s.id, Workspace: s.workspace,
+		LastTurnStatus: status, Messages: s.messages[1:],
+	})
 }
 
 // Input 负责读取一条完整的用户输入。终端实现可以提供光标编辑、历史和多行输入，
@@ -191,6 +279,11 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 			turnSpan.SetStatus(codes.Error, turnErr.Error())
 		}
 		turnSpan.End()
+	}()
+	defer func() {
+		if err := s.save(turnErr); err != nil {
+			turnErr = errors.Join(turnErr, err)
+		}
 	}()
 	s.messages = append(s.messages, provider.NewMessage(provider.RoleUser, input, ""))
 	toolDefinitions := s.registry.Definitions()

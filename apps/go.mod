@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/creack/pty v1.1.24
 	github.com/ergochat/readline v0.1.3
+	github.com/google/uuid v1.6.0
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	github.com/mattn/go-runewidth v0.0.23
 	github.com/pelletier/go-toml/v2 v2.2.4
@@ -33,7 +34,6 @@ require (
 	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
