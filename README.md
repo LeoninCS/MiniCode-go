@@ -100,7 +100,7 @@ host = "https://cloud.langfuse.com"
 
 `public_key` 和 `secret_key` 同时留空或省略整个 `[langfuse]` 表时关闭追踪；启用时必须同时填写两项。`host` 留空时使用 Langfuse Cloud，自部署用户填写实例根地址。
 
-启用后，MiniCode 会通过 OTLP/HTTP 上传完整的用户输入、模型请求与响应、工具参数与结果、token 用量、耗时和错误。数据可能包含源代码、命令输出和其他敏感信息，请仅连接可信的 Langfuse 项目。详细配置、错误排查和数据范围见 [`docs/configuration.md`](docs/configuration.md)。
+启用后，MiniCode 会通过 OTLP/HTTP 上传完整的用户输入、模型请求与响应、工具参数与结果、token 用量、耗时和错误。数据可能包含源代码、命令输出和其他敏感信息，请仅连接可信的 Langfuse 项目。配置字段和使用示例见本节。
 
 ### 4. 在自己的项目中启动
 
@@ -154,7 +154,7 @@ minicode
 - ✅ Day 6：已完成工具输出截断、500 轮上限、单轮超时、模型单轮输出限制和副作用工具执行前审批；不提供危险命令黑名单或硬拦截；
 - ✅ Day 7：已完成 Ctrl+C / SIGTERM 中断、context 取消链路，以及中断、超时和普通失败的提示区分；
 - ✅ Day 8：已完成 token 统计和过程可视化；
-- ✅ Day 9：已支持通过 `--session` 将完整会话安全保存到 JSON 文件并跨进程恢复；
+- ✅ Day 9：新会话默认按 UUID 自动保存，并支持通过 `--session <id>` 跨进程恢复；
 - ⬜ Day 10：Provider 抽象层；
 - ⬜ Day 11：SSE 流式解析；
 - ⬜ Day 12：tool_calls 参数分片累积与打字机输出；
@@ -165,10 +165,10 @@ minicode
 
 ### 2026-10-09
 
-- 完成 Day 9 Session 持久化：`--session` 可创建或恢复版本化 JSON 会话文件；
+- 完成 Day 9 Session 持久化：启动时自动创建 UUID，会话默认保存到 `.minicode/sessions/<id>.json`，并可通过 `--session <id>` 恢复；
 - 保存用户消息、模型回复、工具调用、工具结果、工作区和上一轮状态，系统 Prompt 在恢复时重新生成；
-- 使用 `0600` 临时文件和原子重命名写入，严格拒绝损坏文件、不兼容版本、工作区不匹配及不完整工具消息；
-- 使用方法、安全边界和文件格式见 [`docs/session.md`](docs/session.md)。
+- 使用 `0600` 临时文件和原子重命名写入，严格拒绝非法 ID、损坏文件、不兼容版本、工作区不匹配及不完整工具消息；
+- CLI 启动后输出 `[会话] <id>`；该 ID 只在创建它的工作区中有效。
 
 ### 2026-10-08
 
@@ -176,7 +176,7 @@ minicode
 - 交互模式在标准输出展示统计，管道模式改写标准错误，避免污染最终回答；模型未返回 `usage` 时明确显示不可用，部分响应缺失时标记为 `partial`；
 - 配置入口统一为启动目录下的 `apps/config/config.toml`，移除旧 `.env`、配置环境变量和模型配置 flag；
 - 新增可选的 Langfuse OTLP/HTTP 链路追踪，覆盖用户轮次、模型调用、工具调用、token 用量、耗时和错误；
-- 增加 [`docs/configuration.md`](docs/configuration.md)，说明配置字段、敏感数据范围与故障排查。
+- 增加 TOML 模型配置和 Langfuse 追踪说明。
 
 ### 2026-10-06
 
@@ -190,7 +190,7 @@ minicode
 - 支持真实多行输入、自动折行、上下光标移动和滚动显示；上下键不再浏览历史记录；
 - 修复扩展键盘协议下 Ctrl+C 无效的问题，键盘协议只在编辑输入时启用；取消运行中的任务后直接退出，避免再次打开输入框；
 - 运行过程使用终端备用屏幕，最终回答、失败或取消时恢复主屏幕，避免中间输出污染对话记录；
-- 补充输入编辑、终端显示和 Ctrl+C 退出回归测试。实现与验证总结见 [`docs/cli.md`](docs/cli.md)。
+- 补充输入编辑、终端显示和 Ctrl+C 退出回归测试。
 
 ### 2026-10-01
 
@@ -215,11 +215,8 @@ minicode
 
 - [`docs/spec.md`](docs/spec.md)：项目定位、功能规格、开发计划和验收标准；
 - [`docs/plan.md`](docs/plan.md)：按天拆分的开发任务和完成状态；
-- [`docs/agent.md`](docs/agent.md)：Agent 操作规范（硬边界、已固化决策、已知陷阱），用于防止多 Day 实施中的细节漂移。
-- [`docs/tools.md`](docs/tools.md)：工具体系（目录职责、内置工具、注册表机制与决策记录）。
-- [`docs/cli.md`](docs/cli.md)：CLI 多行编辑、终端输出、Ctrl+C 修复与验证总结；
-- [`docs/configuration.md`](docs/configuration.md)：TOML 模型配置、Langfuse 追踪、数据范围与故障排查；
-- [`docs/session.md`](docs/session.md)：Session 文件格式、恢复方式、安全边界和错误处理。
+- [`docs/agent.md`](docs/agent.md)：Agent 操作规范（硬边界、已固化决策、已知陷阱），用于防止多 Day 实施中的细节漂移；
+- [`docs/tutorial.md`](docs/tutorial.md)：配置、启动、会话恢复、审批和超时的使用教程。
 
 ## 目录结构
 
@@ -230,10 +227,7 @@ MiniCode-go/
 │   ├── spec.md
 │   ├── plan.md
 │   ├── agent.md                       # Agent 操作规范
-│   ├── cli.md                         # CLI 交互与终端实现总结
-│   ├── configuration.md               # TOML 配置与 Langfuse 追踪
-│   ├── session.md                     # Session 持久化与恢复
-│   └── tools.md                       # 工具体系
+│   └── tutorial.md                    # 使用教程
 └── apps/                              # Go module: github.com/MiniCode-go/minicode
     ├── go.mod
     ├── cmd/minicode/main.go           # 启动入口
@@ -301,16 +295,21 @@ printf '分析这个项目\n运行测试\n' | ./bin/minicode
 # /exit 和 /quit 均可结束交互会话
 ```
 
-完整字段、Langfuse 追踪和错误排查见 [`docs/configuration.md`](docs/configuration.md)。模型配置不能通过环境变量或 CLI flag 覆盖；`apps/config/config.toml` 含有密钥且已被 Git 忽略。
+模型配置不能通过环境变量或 CLI flag 覆盖；`apps/config/config.toml` 含有密钥且已被 Git 忽略。可选的 `[langfuse]` 配置及其敏感数据范围见上文“配置模型服务”。
 
-每个 Session 启动时会注入系统 Prompt，其中包含当前工作区、文件路径边界、工具说明、先读后改、修改后验证等规则。同一进程中的用户消息、模型回复、工具调用和工具结果会持续累积，因此后续问题可以引用前面的内容。使用 `--session` 可将历史保存到本地 JSON，并在同一工作区的后续进程中恢复：
+每个 Session 启动时会注入系统 Prompt，其中包含当前工作区、文件路径边界、工具说明、先读后改、修改后验证等规则。新会话无需额外参数：MiniCode 会生成标准小写 UUID，立即在当前工作区创建 `.minicode/sessions/<id>.json`，并在每轮结束后自动更新。启动时会输出会话 ID，例如：
 
-```bash
-minicode --session .minicode-session.json "分析这个项目"
-minicode --session .minicode-session.json "继续刚才的任务"
+```text
+[会话] 550e8400-e29b-41d4-a716-446655440000
 ```
 
-Session 文件可能包含源码和命令输出等敏感信息，请勿提交到 Git。详细格式和限制见 [`docs/session.md`](docs/session.md)。
+记下该 ID 后，可在**创建它的同一工作区**跨进程继续会话：
+
+```bash
+minicode --session 550e8400-e29b-41d4-a716-446655440000 "继续刚才的任务"
+```
+
+`--session` 接收会话 ID，不接收文件路径；ID 必须是标准小写 UUID，且对应存档必须已经存在。恢复时会重新生成系统 Prompt，并恢复已完成的协议消息；不会恢复运行中的进程、审批状态或文件工具的读取缓存。Session 文件可能包含源码、命令输出和其他敏感信息，请勿提交到 Git；`.minicode/` 已被本仓库忽略。
 
 终端中的模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具调用信息和命令输出原样显示。
 
@@ -347,4 +346,4 @@ go -C apps run ./cmd/minicode
 go -C apps test -count=1 ./test/...
 ```
 
-执行前审批已经接入；会话持久化、流式输出和上下文压缩仍在后续计划中。工具的组织方式与注册表机制见 [`docs/tools.md`](docs/tools.md)。
+执行前审批和会话持久化已经接入；流式输出和上下文压缩仍在后续计划中。工具实现与注册机制见 `apps/internal/tools/`。

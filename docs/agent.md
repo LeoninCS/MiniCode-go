@@ -38,7 +38,7 @@ apps/                                # Go module 根(不是仓库根)
 ```
 
 - 后续 Day:源码 `apps/internal/<name>/`,测试 `apps/test/<name>/`,同名目录
-- 测试文件名与被测源文件同名对应;工具体系细节见 `tools.md`
+- 测试文件名与被测源文件同名对应；工具实现与注册机制位于 `apps/internal/tools/`
 - `internal/` 不依赖 `cmd/`；第三方渲染与终端依赖集中在 `internal/cli/`，`provider` 和 `tools` 继续只依赖标准库
 - go 命令全部 `go -C apps build/test/vet ./...`
 
@@ -70,7 +70,7 @@ apps/                                # Go module 根(不是仓库根)
 
 - **Provider 协议 = OpenAI 兼容**(`/chat/completions`、Bearer、application/json)。理由:DeepSeek / MiniMax / Moonshot / 智谱 / 硅基流动 / OpenAI 都兼容,Day 10 抽象时切换成本最低
 - **API 错误双格式兼容**:OpenAI 嵌套 `{"error": {...}}` 与平铺,非 JSON 退化为带状态码的通用错误
-- **当前配置（2026-10-08 调整）**：CLI 只读取启动目录下固定路径 `apps/config/config.toml`；模型字段 `api_key`、`base_url`、`name` 必填，Langfuse 配置可选。旧 `.env`、配置环境变量和模型配置 flag 已移除，详见 [configuration.md](configuration.md)
+- **当前配置（2026-10-08 调整）**：CLI 只读取启动目录下固定路径 `apps/config/config.toml`；模型字段 `api_key`、`base_url`、`name` 必填，Langfuse 配置可选。旧 `.env`、配置环境变量和模型配置 flag 已移除，配置示例见 `README.md` 和 `tutorial.md`
 - **配置校验**：使用严格 TOML 解析，拒绝未知字段；解析错误不回显可能含密钥的原始配置行
 - **目录布局 = `apps/`**:monorepo-friendly。本次实施观察到 `go mod tidy` 后目录被外部自动化从根 cmd/ internal/ 重组为 apps/,agent 接受,后续发现再改动先停下报告
 
@@ -106,7 +106,7 @@ apps/                                # Go module 根(不是仓库根)
 - **键盘协议生命周期**：只在编辑输入时启用扩展键盘协议，转换编码后的 Ctrl+C，并在离开 raw 模式时恢复。模型和工具执行期间不得遗留该协议。
 - **取消语义**：Ctrl+C 退出整个会话；任务返回后根 context 已取消时，不再启动下一次输入 goroutine，避免退出时重新进入 raw 模式。
 - **输出生命周期**：运行过程放在备用屏幕，最终回答前及错误、超时、取消路径均恢复主屏幕；非交互模式保留完整输出。
-- **验证边界**：除提交内容外，还需覆盖 PTY 中的实际显示与光标，以及进程退出后的键盘协议和屏幕恢复；实现总结和测试入口见 [cli.md](cli.md)。
+- **验证边界**：除提交内容外，还需覆盖 PTY 中的实际显示与光标，以及进程退出后的键盘协议和屏幕恢复；测试入口位于 `apps/test/cli/`。
 
 ### Day 8 任务统计（2026-10-08）
 
@@ -114,6 +114,13 @@ apps/                                # Go module 根(不是仓库根)
 - **缺失语义**：`ChatResponse.Usage` 可空；全部缺失时显示 `Token 不可用`，部分缺失时只累计已有数据并标记 `（部分统计）`，不在本地估算未知 token。
 - **总数兼容**：若服务返回输入或输出 token、但 `total_tokens` 为零，则使用输入与输出之和补全该响应的总数。
 - **输出边界**：交互模式把统计写入 stdout；非交互模式写入 stderr，保证 stdout 仍可作为纯模型回答进入管道。成功、失败、取消和超时路径都必须发送任务统计。
+
+### Day 9 Session 持久化（2026-10-09）
+
+- **默认保存**：新会话生成标准小写 UUID，立即创建 `.minicode/sessions/<id>.json`，并在每轮结束后原子更新。
+- **恢复入口**：CLI 输出当前会话 ID；`--session <id>` 只恢复当前工作区中已经存在的存档，不接受文件路径或空 ID。
+- **恢复边界**：存档保留用户、assistant 和 tool 协议消息及上一轮状态；系统 Prompt 按当前实现重新生成，不恢复进程、审批状态或文件读取缓存。
+- **校验与权限**：校验 UUID、版本、工作区和工具调用配对；临时文件权限为 `0600`，`.minicode/` 不应提交到 Git。
 
 ## 6. 已知陷阱
 
