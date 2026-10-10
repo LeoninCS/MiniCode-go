@@ -12,10 +12,15 @@ cp apps/config/config.example.toml apps/config/config.toml
 
 ```toml
 [model]
+provider = "openai" # 可选，省略时使用 OpenAI 兼容协议
 api_key = "你的 API Key"
 base_url = "https://api.deepseek.com/v1"
 name = "deepseek-chat"
 ```
+
+`api_key`、`base_url` 和 `name` 必填。`provider` 选择调用协议，当前仅支持 `"openai"`，省略或留空时使用同一协议。其他兼容 OpenAI Chat Completions 的服务可填写对应的地址、密钥和模型名；专用协议需要新增适配器。
+
+当前模型回复为非流式，默认请求不设置输出 Token 上限，使用模型服务的默认值。
 
 ## 2. 启动 MiniCode
 
@@ -47,7 +52,7 @@ minicode --yes "运行测试并修复问题"
 
 ## 4. 自动保存和恢复会话：`--session`
 
-每次启动 MiniCode 都会创建一个新会话，生成标准小写 UUID，并自动保存对话、模型回复、工具调用和工具结果。无需为保存新会话传入额外参数：
+未指定 `--session` 时，MiniCode 会创建一个新会话，生成标准小写 UUID，并自动保存对话、模型回复、工具调用和工具结果。无需为保存新会话传入额外参数：
 
 ```bash
 minicode "分析项目结构"
@@ -62,8 +67,10 @@ minicode "分析项目结构"
 记下该 ID。下次在创建它的**同一个工作区**中，通过 `--session <id>` 继续会话：
 
 ```bash
-minicode --session 550e8400-e29b-41d4-a716-446655440000 "继续刚才的任务"
+minicode --session 550e8400-e29b-41d4-a716-446655440000
 ```
+
+恢复后与正常启动一样等待输入，你可以直接输入下一项任务，无需在命令后附加“继续刚才的任务”。也可以像新会话一样，通过位置参数直接提交具体任务。
 
 会话存档固定保存在当前工作区的 `.minicode/sessions/<id>.json`。`--session` 接收 UUID，不接收文件路径，也不会用指定 ID 创建新会话；ID 非法或存档不存在时程序会报错退出。
 
@@ -96,7 +103,7 @@ minicode --yes --timeout 30m "检查项目并修复测试"
 记下启动时显示的会话 ID，之后继续该会话：
 
 ```bash
-minicode --yes --session 550e8400-e29b-41d4-a716-446655440000 "继续处理剩余问题"
+minicode --yes --session 550e8400-e29b-41d4-a716-446655440000
 ```
 
 ## 7. 查看帮助

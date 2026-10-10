@@ -80,12 +80,17 @@ $EDITOR apps/config/config.toml
 
 ```toml
 [model]
+provider = "openai" # 可选，省略时使用 OpenAI 兼容协议
 api_key = "你的_API_Key"
 base_url = "https://api.deepseek.com/v1"
 name = "deepseek-chat"
 ```
 
 `model.api_key`、`model.base_url` 和 `model.name` 均为必填项。`config.toml` 包含密钥，已被 `.gitignore` 忽略，请勿提交到 Git。
+
+`model.provider` 选择调用协议，当前仅支持 `"openai"`，省略或留空时也使用该协议。这里的 `openai` 表示 OpenAI 兼容的 Chat Completions 接口；使用其他兼容服务时，填写对应的地址、密钥和模型名即可。Anthropic / Gemini 专用协议尚未实现，填写其他 `provider` 值会报错。
+
+当前模型调用为非流式。默认请求不设置 `max_tokens`，模型输出长度使用服务端默认值。
 
 > MiniCode 的工作区就是启动命令时的目录。因此在其他项目中运行时，需要在该项目中创建 `apps/config/config.toml`；配置文件路径目前不可自定义。
 
@@ -151,17 +156,25 @@ minicode
 - ✅ Day 3：Agent Loop；
 - ✅ Day 4：`bash` / `read` / `write` / `edit` 四个工具与工具注册表；
 - ✅ Day 5：系统 Prompt + 默认 CLI 输入循环 + 会话内跨轮记忆；
-- ✅ Day 6：已完成工具输出截断、500 轮上限、单轮超时、模型单轮输出限制和副作用工具执行前审批；不提供危险命令黑名单或硬拦截；
+- ✅ Day 6：已完成工具输出截断、500 轮上限、单轮超时和副作用工具执行前审批；不提供危险命令黑名单或硬拦截；
 - ✅ Day 7：已完成 Ctrl+C / SIGTERM 中断、context 取消链路，以及中断、超时和普通失败的提示区分；
 - ✅ Day 8：已完成 token 统计和过程可视化；
 - ✅ Day 9：新会话默认按 UUID 自动保存，并支持通过 `--session <id>` 跨进程恢复；
-- ⬜ Day 10：Provider 抽象层；
+- ✅ Day 10：Provider 接口、配置工厂、统一响应与错误，以及 Fake Provider 测试；已定义流式契约，实际 SSE 解析留待 Day 11；
 - ⬜ Day 11：SSE 流式解析；
 - ⬜ Day 12：tool_calls 参数分片累积与打字机输出；
 - ⬜ Day 13：上下文压缩触发与摘要；
 - ⬜ Day 14：压缩切分点合法性处理。
 
 ## 最近更新
+
+### 2026-10-10
+
+- 完成 Day 10 Provider 抽象：Agent 通过 `Provider.Chat` 调用模型，CLI 通过 `provider.New` 按配置创建实现；
+- 当前实际适配器支持 OpenAI 兼容 Chat Completions 协议，可复用它调用兼容服务；其他专用协议仍需新增适配器；
+- 定义可选的 `StreamingProvider`、`Stream` 和增量事件；当前 `ChatStream` 返回 `ErrStreamingUnsupported`，尚未实现流式输出；
+- 使用 Fake Provider 验证工具调用、历史、错误恢复、用量统计及轮数上限后的总结，无需真实模型服务；
+- 移除模型输出 Token 上限配置和默认值，普通请求与最终总结均使用模型服务的默认输出长度。
 
 ### 2026-10-09
 
@@ -250,12 +263,16 @@ MiniCode-go/
     │   ├── write.go                   # write 工具
     │   ├── edit.go                    # edit 工具
     │   └── filesystem.go              # 工作区句柄、原子写入与版本记录
-    ├── internal/provider/              # 模型协议结构体 + OpenAI 兼容客户端(纯源码)
-    │   ├── types.go
+    ├── internal/provider/              # Provider 抽象 + OpenAI 兼容客户端(纯源码)
+    │   ├── provider.go                 # 接口、流式契约与配置工厂
+    │   ├── types.go                    # 公共消息、响应、工具调用与错误
     │   └── openai.go
     └── test/                           # 测试文件单独目录(black-box)
         ├── cli/                       # CLI、输入、终端显示与退出测试
-        ├── agent/agent_test.go         # Agent 输出边界与错误回传测试
+        ├── agent/                     # Agent、Fake Provider 与持久化测试
+        │   ├── agent_test.go
+        │   ├── run_test.go
+        │   └── session_store_test.go
         ├── tools/                      # 文件工具、bash 与注册表测试
         │   ├── bash_test.go
         │   ├── read_test.go
@@ -264,6 +281,7 @@ MiniCode-go/
         │   ├── filesystem_test.go
         │   └── registry_test.go
         └── provider/
+            ├── provider_test.go        # 配置工厂与流式能力边界
             ├── openai_test.go
             └── tool_calls_test.go
 ```
@@ -306,8 +324,10 @@ printf '分析这个项目\n运行测试\n' | ./bin/minicode
 记下该 ID 后，可在**创建它的同一工作区**跨进程继续会话：
 
 ```bash
-minicode --session 550e8400-e29b-41d4-a716-446655440000 "继续刚才的任务"
+minicode --session 550e8400-e29b-41d4-a716-446655440000
 ```
+
+恢复后与正常启动一样进入输入循环，可以直接输入下一项任务，无需在命令后附加提示词。
 
 `--session` 接收会话 ID，不接收文件路径；ID 必须是标准小写 UUID，且对应存档必须已经存在。恢复时会重新生成系统 Prompt，并恢复已完成的协议消息；不会恢复运行中的进程、审批状态或文件工具的读取缓存。Session 文件可能包含源码、命令输出和其他敏感信息，请勿提交到 Git；`.minicode/` 已被本仓库忽略。
 
@@ -336,7 +356,7 @@ arguments: {"command":"go test ./..."}
 
 命令通过 `bash -c` 在启动 CLI 时的工作目录执行，标准输出和错误输出会合并显示。每次调用使用独立的非交互 shell，`cd` 不会影响下一次调用；当前工作目录不是文件系统沙箱。项目不检查命令内容，也不提供危险命令黑名单或硬拦截；命令安全边界是默认开启的逐次用户审批。`--yes` 会跳过审批，因此只应在用户信任模型生成操作的场景使用。
 
-每项任务最多进行 500 轮可使用工具的模型请求。达到上限后，再请求一次不带工具的最终总结；若总结失败或为空，则输出停止说明。达到上限仍返回非零退出码。每次模型调用都会通过 OpenAI 兼容的 `max_tokens` 参数限制输出，默认上限为 16384 tokens；该值由 `provider.Config.MaxOutputTokens` 统一配置，普通请求和最终总结均使用同一限制。`-timeout` 默认 1 小时，覆盖模型请求、命令执行和最终总结。Ctrl+C 或超时会终止当前命令进程组；单次工具输出最多保留 64 KiB，并标记截断。命令失败的输出和错误也会回传模型。
+每项任务最多进行 500 轮可使用工具的模型请求。达到上限后，再请求一次不带工具的最终总结；若总结失败或为空，则输出停止说明。达到上限仍返回非零退出码。普通模型请求和最终总结均使用服务端默认的输出长度。`-timeout` 默认 1 小时，覆盖模型请求、命令执行和最终总结。Ctrl+C 或超时会终止当前命令进程组；单次工具输出最多保留 64 KiB，并标记截断。命令失败的输出和错误也会回传模型。
 
 ```bash
 # 从项目根目录启动（已准备 apps/config/config.toml），然后在交互界面中输入任务

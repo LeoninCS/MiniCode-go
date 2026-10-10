@@ -2,6 +2,8 @@
 # 复制此文件为同目录的 config.toml 并填写配置。
 
 [model]
+# 可选；省略或留空时也使用 OpenAI 兼容协议，当前仅支持此值。
+provider = "openai"
 api_key = ""
 base_url = "https://api.deepseek.com/v1"
 name = "deepseek-chat"

@@ -9,7 +9,7 @@
 - git 写操作:不替用户执行 commit / push / reset / `checkout --`,只生成提交信息措辞
 - 顶层目录:不擅自新增 / 改名 / 移动 cmd/ internal/ apps/ docs/,发现被外部工具改动先停下报告
 - 依赖:不引入第三方 Go module,除非 plan.md 显式允许或与用户对齐
-- Provider 协议:Day 1 已选 OpenAI 兼容,Day 10 抽象前不要切到 Anthropic / Gemini 专用
+- Provider 边界:Agent 依赖统一 `Provider` 接口；当前适配器使用 OpenAI 兼容协议，新增协议在 Provider 层实现并接入配置工厂
 - 退出码:成功 0;运行时错误 1;配置/输入错误 2
 
 ## 2. 项目布局
@@ -27,8 +27,9 @@ apps/                                # Go module 根(不是仓库根)
 │   ├── bash.go                      # RunBash + execute*Tool + build*Tool
 │   ├── read.go / write.go / edit.go # 同上,按工具分文件
 │   └── filesystem.go                # FileTools、工作区句柄与原子写入
-├── internal/provider/               # 模型协议 + OpenAI 兼容客户端(纯源码,无 _test.go)
-│   ├── types.go
+├── internal/provider/               # Provider 抽象 + OpenAI 兼容客户端(纯源码,无 _test.go)
+│   ├── provider.go                  # 接口、流式契约与配置工厂
+│   ├── types.go                     # 公共消息、响应、工具调用与错误
 │   └── openai.go
 └── test/                            # 测试单独目录,black-box
     ├── cli/                        # CLI、输入、终端显示与退出
@@ -39,7 +40,7 @@ apps/                                # Go module 根(不是仓库根)
 
 - 后续 Day:源码 `apps/internal/<name>/`,测试 `apps/test/<name>/`,同名目录
 - 测试文件名与被测源文件同名对应；工具实现与注册机制位于 `apps/internal/tools/`
-- `internal/` 不依赖 `cmd/`；第三方渲染与终端依赖集中在 `internal/cli/`，`provider` 和 `tools` 继续只依赖标准库
+- `internal/` 不依赖 `cmd/`；第三方渲染与终端依赖集中在 `internal/cli/`，`provider` 和 `agent` 使用 OpenTelemetry 进行追踪
 - go 命令全部 `go -C apps build/test/vet ./...`
 
 ## 3. 编码风格
@@ -68,9 +69,9 @@ apps/                                # Go module 根(不是仓库根)
 
 ### Day 1(2026-08-15)
 
-- **Provider 协议 = OpenAI 兼容**(`/chat/completions`、Bearer、application/json)。理由:DeepSeek / MiniMax / Moonshot / 智谱 / 硅基流动 / OpenAI 都兼容,Day 10 抽象时切换成本最低
-- **API 错误双格式兼容**:OpenAI 嵌套 `{"error": {...}}` 与平铺,非 JSON 退化为带状态码的通用错误
-- **当前配置（2026-10-08 调整）**：CLI 只读取启动目录下固定路径 `apps/config/config.toml`；模型字段 `api_key`、`base_url`、`name` 必填，Langfuse 配置可选。旧 `.env`、配置环境变量和模型配置 flag 已移除，配置示例见 `README.md` 和 `tutorial.md`
+- **Provider 协议 = OpenAI 兼容**(`/chat/completions`、Bearer、application/json)。兼容该协议的模型服务可复用同一客户端，通过地址、密钥和模型名切换。
+- **API 错误格式兼容**:OpenAI 嵌套 `{"error": {...}}` 与平铺均可解析，非 JSON HTTP 错误也统一返回带状态码的 `APIError`
+- **当前配置（2026-10-10 调整）**：CLI 只读取启动目录下固定路径 `apps/config/config.toml`；模型字段 `api_key`、`base_url`、`name` 必填，`provider` 可选且默认为 `"openai"`，Langfuse 配置可选。旧 `.env`、配置环境变量和模型配置 flag 已移除，配置示例见 `README.md` 和 `tutorial.md`
 - **配置校验**：使用严格 TOML 解析，拒绝未知字段；解析错误不回显可能含密钥的原始配置行
 - **目录布局 = `apps/`**:monorepo-friendly。本次实施观察到 `go mod tidy` 后目录被外部自动化从根 cmd/ internal/ 重组为 apps/,agent 接受,后续发现再改动先停下报告
 
@@ -88,7 +89,7 @@ apps/                                # Go module 根(不是仓库根)
 - **保留现有协议**：使用 `bash{command}`，通过 `bash -c` 在启动 CLI 的工作目录执行，每次调用使用独立 shell。
 - **审批执行**：`bash`、`write`、`edit` 默认逐次展示调用并等待用户批准；拒绝时不执行，并把拒绝结果回传模型。`--yes` 可自动批准。命令内容不做黑名单检查或危险命令硬拦截。
 - **执行边界**：最多 500 轮可使用工具的模型请求；达到上限后额外请求一次纯文本总结，不再提供或执行工具。总结沿用整项任务的 timeout，失败时输出停止说明；达到上限仍返回非零退出码。取消时终止命令进程组，单次命令输出最多保留 64 KiB。
-- **模型输出边界**：`provider.Config.MaxOutputTokens` 统一限制每次模型调用的输出长度，并映射到 OpenAI 兼容请求的 `max_tokens`；配置为 0 时默认使用 16384，负数视为非法。普通 Agent 请求和达到轮数上限后的最终总结使用同一限制。
+- **模型输出策略（2026-10-10 调整）**：普通 Agent 请求和达到轮数上限后的总结不设置 `max_tokens`，使用模型服务的默认输出长度。底层 `ChatRequest.MaxTokens` 保留为显式请求字段，值为 0 时不发送，客户端不自动填充或覆盖。
 - **实现范围**：简单循环和 bash 执行函数，不提前引入工具注册表、交互会话和持久化。
 - **职责划分（按当前实现更新）**：`internal/agent` 管理模型循环、消息历史、轮数和工具分发；工具协议适配与注册表位于 `internal/tools`。`internal/cli` 负责参数、输入、任务取消、展示和退出码，`cmd/minicode` 只保留启动入口。
 - **展示边界**：Agent 通过 `Output` 接口交付模型文本、工具调用、实时输出、结果和工具错误；不依赖终端渲染，不打印 CLI 前缀。终止任务的错误由 `Run` 返回。
@@ -118,9 +119,18 @@ apps/                                # Go module 根(不是仓库根)
 ### Day 9 Session 持久化（2026-10-09）
 
 - **默认保存**：新会话生成标准小写 UUID，立即创建 `.minicode/sessions/<id>.json`，并在每轮结束后原子更新。
-- **恢复入口**：CLI 输出当前会话 ID；`--session <id>` 只恢复当前工作区中已经存在的存档，不接受文件路径或空 ID。
+- **恢复入口**：CLI 输出当前会话 ID；`--session <id>` 只恢复当前工作区中已经存在的存档，不接受文件路径或空 ID。仅运行这条命令即可进入普通输入循环，无需附加提示词。
 - **恢复边界**：存档保留用户、assistant 和 tool 协议消息及上一轮状态；系统 Prompt 按当前实现重新生成，不恢复进程、审批状态或文件读取缓存。
 - **校验与权限**：校验 UUID、版本、工作区和工具调用配对；临时文件权限为 `0600`，`.minicode/` 不应提交到 Git。
+
+### Day 10 Provider 抽象（2026-10-10）
+
+- **调用边界**：Agent 的 Session 和最终总结只依赖 `Provider.Chat(context.Context, ChatRequest)`；消息历史、工具审批和执行仍由 Agent 管理。
+- **协议选择**：CLI 通过 `provider.New` 创建实现，空值或 `"openai"` 选择 OpenAI 兼容客户端，未知协议报错。新增专用协议需要实现 `Provider` 并接入工厂，不能仅添加 Schema。
+- **统一数据与错误**：复用 `ChatRequest`、`ChatResponse`、`Message`、工具调用和可选 `Usage`；服务 HTTP 错误转换为 `APIError`，网络与取消错误保留原有错误链。
+- **流式契约**：`StreamingProvider` 是可选能力，定义 `ChatStream`、`Recv/Close` 和文本、工具调用参数的增量事件。当前客户端返回 `ErrStreamingUnsupported`；SSE 请求与解析仍留待 Day 11。
+- **测试替身**：Fake Provider 只需实现 `Chat`，按测试预设返回文本、工具调用、usage 或错误，无需 API Key 或真实 HTTP 请求；测试覆盖真实 read 工具、跨轮历史、错误恢复及轮数上限后的总结。
+- **追踪可选**：Provider 接口不要求实现 `Tracer()`；实现提供它时 Agent 复用 tracer，否则使用 no-op tracer。
 
 ## 6. 已知陷阱
 

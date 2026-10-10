@@ -2,7 +2,7 @@
 
 > 目标：用 Go 实现一个面向学习的迷你版 Pi。  
 > 交互方式：CLI 优先。  
-> 当前状态：Day 0～Day 9 已完成。
+> 当前状态：Day 0～Day 10 已完成。
 
 ## 状态标记
 
@@ -22,7 +22,9 @@ Day 11～Day 12 交互增强版：SSE 流式输出 + 工具参数分片
 Day 13～Day 14 长任务版：上下文压缩与合法切分
 ```
 
-> 当前已完成：Day 0（规划）、Day 1（模型调用）、Day 2（工具协议）、Day 3（Agent Loop）、Day 4（内置工具与注册表）、Day 5（系统 Prompt 与交互会话）、Day 6（资源控制与执行审批）、Day 7（中断与取消）、Day 8（Token 统计与过程可视化）、Day 9（Session 持久化与恢复）。
+> 当前已完成：Day 0（规划）、Day 1（模型调用）、Day 2（工具协议）、Day 3（Agent Loop）、Day 4（内置工具与注册表）、Day 5（系统 Prompt 与交互会话）、Day 6（资源控制与执行审批）、Day 7（中断与取消）、Day 8（Token 统计与过程可视化）、Day 9（Session 持久化与恢复）、Day 10（Provider 抽象）。
+
+2026-10-10 完成 Day 10：Agent 依赖统一的 `Provider` 接口，配置工厂目前创建 OpenAI 兼容实现；公共响应、错误和 Fake Provider 测试已接入。流式接口与事件契约已定义，实际 SSE 解析仍属于 Day 11。模型输出 Token 上限配置和默认值已移除。
 
 2026-10-09 完成 Day 9：新会话默认生成 UUID，并将版本、工作区、任务状态和完整协议消息原子保存到 `.minicode/sessions/<id>.json`；`--session <id>` 可在同一工作区恢复，恢复时重新生成系统 Prompt，并严格校验 ID、版本、工作区以及工具调用与结果配对。
 
@@ -230,11 +232,12 @@ arguments: {"command":"go test ./..."}
 - ✅ 每项任务最多进行 500 轮可使用工具的模型请求；
 - ✅ 达到轮数上限后停止工具执行，并额外请求一次不带工具的最终总结；
 - ✅ 每轮任务有独立超时，默认 1 小时，覆盖模型请求、工具执行和最终总结；
-- ✅ 通过 `provider.Config.MaxOutputTokens` 限制模型单轮输出长度，默认 16384 tokens，并统一应用于普通请求和最终总结；
 - ✅ 修改文件前请求确认；
 - ✅ 执行 bash 前请求确认；
 - ✅ 用户拒绝后将结果回传模型；
 - ✅ 确认机制作为命令安全边界，不提供危险命令黑名单或硬拦截；`--yes` 可自动批准。
+
+普通模型请求和达到轮数上限后的总结不设置输出 Token 上限，使用模型服务的默认值。
 
 ### 产出
 
@@ -336,11 +339,11 @@ $ minicode
 minicode --session 550e8400-e29b-41d4-a716-446655440000
 ```
 
-恢复后可以继续之前的任务。`--session` 只接收已有会话的标准小写 UUID，不接收文件路径。
+恢复后与正常启动一样进入输入循环，可以直接输入下一项任务，无需附加提示词。`--session` 只接收已有会话的标准小写 UUID，不接收文件路径。
 
 ---
 
-## Day 10：Provider 抽象层 ⬜
+## Day 10：Provider 抽象层 ✅
 
 ### 目标
 
@@ -348,17 +351,18 @@ minicode --session 550e8400-e29b-41d4-a716-446655440000
 
 ### 内容
 
-- 定义 Provider 接口；
-- 抽象非流式请求；
-- 抽象流式请求；
-- 统一模型响应结构；
-- 统一错误结构；
-- 支持模型配置；
-- 使用 Fake Provider 做测试。
+- ✅ 定义 `Provider.Chat` 接口，Agent 和最终总结依赖接口，不依赖具体 `Client`；
+- ✅ 使用公共 `ChatRequest` 和 `ChatResponse` 表达非流式请求与响应，保留消息、工具调用与可选 usage；
+- ✅ 定义可选的 `StreamingProvider.ChatStream`、`Stream.Recv/Close`、`StreamEvent` 和工具调用增量；
+- ✅ 模型服务的 HTTP 错误统一为 `APIError`，网络与 context 取消错误保留可追溯的错误链；
+- ✅ 通过 `provider.New` 选择实现并校验配置，`model.provider` 可选，默认为 `"openai"`；
+- ✅ 使用 Fake Provider 测试工具调用与历史、错误恢复、用量统计、500 轮上限及最终总结，不调用真实模型服务。
+
+当前实际适配器只有 OpenAI 兼容 Chat Completions 实现。兼容服务可通过地址、密钥和模型名切换；新增专用协议需实现 `Provider` 并接入配置工厂。`Client.ChatStream` 当前返回 `ErrStreamingUnsupported`，不发送 SSE 请求；流式解析和展示由 Day 11～Day 12 完成。
 
 ### 产出
 
-替换模型服务时，不需要修改 Agent Loop 和工具系统。
+Agent Loop 和工具系统可以复用同一个模型调用接口；新增适配器时无需修改这两部分。接口与工厂见 `apps/internal/provider/provider.go`，测试见 `apps/test/provider/provider_test.go` 和 `apps/test/agent/run_test.go`。
 
 ---
 
@@ -456,7 +460,7 @@ CLI 可以像终端 Agent 一样边生成边显示，并在参数接收完整后
 
 ## 功能完成情况
 
-当前仓库已完成项目规划、非流式模型调用、工具调用协议解析和 bash 执行闭环：
+当前仓库已完成 Day 0～Day 10，具备非流式 Agent、四个内置工具、CLI 交互、会话持久化及 Provider 抽象：
 
 - ✅ 项目定位与范围规划；
 - ✅ 基础功能清单；
@@ -472,6 +476,7 @@ CLI 可以像终端 Agent 一样边生成边显示，并在参数接收完整后
 - ✅ 执行前确认（`bash` / `write` / `edit` 默认逐次审批，拒绝结果回传模型，支持 `--yes` 自动批准；不提供命令黑名单或硬拦截）；
 - ✅ token 统计与过程可视化（按任务汇总 usage、模型/工具调用次数与耗时；缺失或部分 usage 会明确标记）；
 - ✅ Session 持久化与恢复（版本化 JSON、工作区与消息配对校验、原子写入）；
+- ✅ Provider 抽象（配置工厂、公共响应与错误、Fake Provider 测试；当前使用 OpenAI 兼容适配器）；
 - ⬜ SSE 流式处理；
 - ⬜ 上下文压缩。
 
