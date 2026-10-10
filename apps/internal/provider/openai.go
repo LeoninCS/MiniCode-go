@@ -16,13 +16,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const (
-	maxLogBodyBytes        = 512
-	defaultMaxOutputTokens = 16384
-)
+const maxLogBodyBytes = 512
 
-// Config 是构造 Client 所需的最小配置。
+// Config 是创建 Provider 所需的模型与连接配置。
 type Config struct {
+	// Provider 指定协议实现，为空时使用 OpenAI 兼容协议。
+	Provider string
 	// BaseURL 是模型服务的根地址,例如 https://api.openai.com/v1
 	// 或 https://api.deepseek.com/v1。末尾斜杠会被自动去掉。
 	BaseURL string
@@ -30,8 +29,6 @@ type Config struct {
 	APIKey string
 	// Model 是默认使用的模型名,例如 "gpt-4o-mini"、"deepseek-chat"。
 	Model string
-	// MaxOutputTokens 限制每次模型调用最多生成的 token 数；为 0 时使用默认值 16384。
-	MaxOutputTokens int
 	// HTTPClient 可选,允许调用方注入自定义 transport(例如测试或代理)。
 	HTTPClient *http.Client
 	// Tracer 可选，用于把完整模型输入、输出、token 和错误上报到 Langfuse。
@@ -40,11 +37,13 @@ type Config struct {
 
 // Client 是对 OpenAI 兼容 /chat/completions 端点的轻量封装。
 //
-// Day 1 只暴露非流式 Chat 方法;流式入口会在 Day 11 补齐。
+// ChatStream 当前返回 ErrStreamingUnsupported，SSE 解析在后续实现。
 type Client struct {
 	cfg  Config
 	http *http.Client
 }
+
+var _ StreamingProvider = (*Client)(nil)
 
 // NewClient 基于 Config 构造一个 Client。
 // 缺省的 HTTPClient 会被设为 1 小时超时,
@@ -52,9 +51,6 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: time.Hour}
-	}
-	if cfg.MaxOutputTokens == 0 {
-		cfg.MaxOutputTokens = defaultMaxOutputTokens
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	return &Client{cfg: cfg, http: cfg.HTTPClient}
@@ -73,6 +69,11 @@ func (c *Client) DefaultModel() string {
 	return c.cfg.Model
 }
 
+// ChatStream 预留统一流式入口；当前实现尚不发送 SSE 请求。
+func (c *Client) ChatStream(context.Context, ChatRequest) (Stream, error) {
+	return nil, ErrStreamingUnsupported
+}
+
 // Chat 发送一次非流式对话请求并解析响应。
 //
 // 调用方通过 req.Model == "" 指定使用默认模型;
@@ -83,9 +84,6 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	}
 	if strings.TrimSpace(c.cfg.APIKey) == "" {
 		return nil, errors.New("provider: empty API key")
-	}
-	if c.cfg.MaxOutputTokens < 0 {
-		return nil, errors.New("provider: max output tokens must be greater than zero")
 	}
 	if len(req.Messages) == 0 {
 		return nil, errors.New("provider: empty messages")
@@ -98,7 +96,6 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		return nil, errors.New("provider: empty model")
 	}
 	req.Model = model
-	req.MaxTokens = c.cfg.MaxOutputTokens
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -183,7 +180,7 @@ func recordSpanError(span trace.Span, err error) {
 }
 
 // parseErrorResponse 尝试将非 2xx 响应解析为 APIError,
-// 解析失败时退化为带状态码的通用错误。
+// 非 JSON 响应也转换为 APIError，保留状态码与截断后的响应文本。
 //
 // 同时兼容两种常见错误格式:
 //   - OpenAI 风格:`{"error": {"code": ..., "message": ..., "type": ...}}`
@@ -193,7 +190,7 @@ func parseErrorResponse(status int, raw []byte) error {
 		apiErr.StatusCode = status
 		return apiErr
 	}
-	return fmt.Errorf("provider: http %d: %s", status, truncateForLog(raw))
+	return &APIError{StatusCode: status, Message: fmt.Sprintf("http %d: %s", status, truncateForLog(raw))}
 }
 
 func decodeAPIError(raw []byte) *APIError {

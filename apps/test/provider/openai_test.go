@@ -19,10 +19,9 @@ func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *p
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv, provider.NewClient(provider.Config{
-		BaseURL:         srv.URL,
-		APIKey:          "test-key",
-		Model:           "test-model",
-		MaxOutputTokens: 4096,
+		BaseURL: srv.URL,
+		APIKey:  "test-key",
+		Model:   "test-model",
 	})
 }
 
@@ -44,9 +43,6 @@ func TestClient_Chat_Success(t *testing.T) {
 		}
 		if req.Model != "test-model" {
 			t.Errorf("expected model test-model, got %s", req.Model)
-		}
-		if req.MaxTokens != 4096 {
-			t.Errorf("expected max_tokens 4096, got %d", req.MaxTokens)
 		}
 		if len(req.Messages) != 1 || req.Messages[0].Role != provider.RoleUser || req.Messages[0].Text() != "hi" {
 			t.Errorf("unexpected messages: %+v", req.Messages)
@@ -78,26 +74,41 @@ func TestClient_Chat_Success(t *testing.T) {
 	}
 }
 
-func TestClient_Chat_DefaultMaxOutputTokens(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req provider.ChatRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if req.MaxTokens != 16384 {
-			t.Errorf("expected default max_tokens 16384, got %d", req.MaxTokens)
-		}
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{
-			Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "ok", "")}},
+func TestClient_Chat_OptionalMaxTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		maxTokens int
+	}{
+		{name: "omitted by default"},
+		{name: "explicit request limit", maxTokens: 128},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode: %v", err)
+					http.Error(w, "invalid request", http.StatusBadRequest)
+					return
+				}
+				limit, exists := body["max_tokens"]
+				if tc.maxTokens == 0 && exists {
+					t.Errorf("default request must omit max_tokens, got %v", limit)
+				} else if tc.maxTokens != 0 && limit != float64(tc.maxTokens) {
+					t.Errorf("max_tokens = %v, want %d", limit, tc.maxTokens)
+				}
+				_ = json.NewEncoder(w).Encode(provider.ChatResponse{
+					Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "ok", "")}},
+				})
+			}))
+			defer srv.Close()
+			client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+			if _, err := client.Chat(context.Background(), provider.ChatRequest{
+				Messages:  []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")},
+				MaxTokens: tc.maxTokens,
+			}); err != nil {
+				t.Fatalf("chat: %v", err)
+			}
 		})
-	}))
-	defer srv.Close()
-
-	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	if _, err := client.Chat(context.Background(), provider.ChatRequest{
-		Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")},
-	}); err != nil {
-		t.Fatalf("chat: %v", err)
 	}
 }
 
@@ -194,6 +205,10 @@ func TestClient_Chat_NonJSONError(t *testing.T) {
 	if !strings.Contains(err.Error(), "502") {
 		t.Errorf("expected status 502 in error, got %v", err)
 	}
+	var apiErr *provider.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadGateway || !strings.Contains(apiErr.Message, "bad gateway") {
+		t.Fatalf("non-JSON response was not normalized: %v", err)
+	}
 }
 
 func TestClient_Chat_ContextCanceled(t *testing.T) {
@@ -252,12 +267,6 @@ func TestClient_Chat_Validation(t *testing.T) {
 			cfg:     provider.Config{BaseURL: "http://example.com", APIKey: "k"},
 			req:     provider.ChatRequest{Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "x", "")}},
 			wantSub: "empty model",
-		},
-		{
-			name:    "negative max output tokens",
-			cfg:     provider.Config{BaseURL: "http://example.com", APIKey: "k", Model: "m", MaxOutputTokens: -1},
-			req:     provider.ChatRequest{Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "x", "")}},
-			wantSub: "max output tokens must be greater than zero",
 		},
 	}
 	for _, tc := range tests {

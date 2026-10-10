@@ -368,7 +368,7 @@ func TestSession_ReadDoesNotRequireApproval(t *testing.T) {
 }
 
 // newSession 打开一个会话并在用例结束时释放工作区,让用例只关心单轮行为。
-func newSession(t *testing.T, client *provider.Client) *agent.Session {
+func newSession(t *testing.T, client provider.Provider) *agent.Session {
 	t.Helper()
 	session, err := agent.NewSession(client, nil)
 	if err != nil {

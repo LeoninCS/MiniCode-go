@@ -33,6 +33,9 @@ func TestMiniCode_Config(t *testing.T) {
 			if req.Model != "file-model" {
 				t.Errorf("model = %q", req.Model)
 			}
+			if req.MaxTokens != 0 {
+				t.Errorf("unexpected max tokens limit: %d", req.MaxTokens)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"loaded"},"finish_reason":"stop"}]}`)
 		case "/api/public/otel/v1/traces":
@@ -56,6 +59,7 @@ func TestMiniCode_Config(t *testing.T) {
 	cmd.Dir = t.TempDir()
 	cmd.Env = append(os.Environ(), legacyConfigEnv()...)
 	writeConfigFile(t, cmd.Dir, fmt.Sprintf(`[model]
+provider = "openai"
 api_key = 'file#key'
 base_url = %q
 name = "file-model" # inline comment
@@ -94,6 +98,8 @@ func TestMiniCode_ConfigErrors(t *testing.T) {
 		{name: "model only disables tracing", content: valid},
 		{name: "missing fields", content: "[model]\n", wantCode: 2, wantError: "model.api_key, model.base_url, model.name"},
 		{name: "blank field", content: strings.Replace(valid, "'file-model'", "'  '", 1), wantCode: 2, wantError: "missing required config: model.name"},
+		{name: "unknown provider", content: valid + "provider = 'unknown'\n", wantCode: 2, wantError: "unsupported provider"},
+		{name: "invalid base URL", content: strings.Replace(valid, "'http://127.0.0.1'", "'/v1'", 1), wantCode: 2, wantError: "absolute HTTP or HTTPS URL"},
 		{name: "invalid syntax", content: invalid, wantCode: 2, wantError: "cannot parse"},
 		{name: "invalid type", content: strings.Replace(valid, "'file-model'", "123", 1), wantCode: 2, wantError: "cannot parse"},
 		{name: "unknown field", content: valid + "[langfuse]\npublic_keey = 'typo'\n", wantCode: 2, wantError: "cannot parse"},

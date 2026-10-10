@@ -16,9 +16,10 @@ const FilePath = "apps/config/config.toml"
 // Config 包含模型服务和可选的 Langfuse 配置。
 type Config struct {
 	Model struct {
-		APIKey  string `toml:"api_key"`
-		BaseURL string `toml:"base_url"`
-		Name    string `toml:"name"`
+		Provider string `toml:"provider"`
+		APIKey   string `toml:"api_key"`
+		BaseURL  string `toml:"base_url"`
+		Name     string `toml:"name"`
 	} `toml:"model"`
 	Langfuse struct {
 		PublicKey string `toml:"public_key"`

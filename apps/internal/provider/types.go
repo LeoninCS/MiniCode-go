@@ -1,7 +1,6 @@
-// Package provider 定义模型提供方共用的协议结构体。
+// Package provider 定义模型提供方共用的调用接口、消息、回复和错误结构。
 //
-// 当前覆盖单次非流式文本请求和 OpenAI 兼容的函数工具调用协议。
-// Agent Loop 和工具执行由调用方处理;流式和 Provider 抽象层留到后续推进。
+// 各实现负责适配服务协议，Agent Loop 和工具执行由调用方处理。
 package provider
 
 import (
@@ -50,7 +49,7 @@ func (m Message) Text() string {
 	return *m.Content
 }
 
-// ChatRequest 是发往模型服务的一次非流式对话请求。
+// ChatRequest 是 Provider 共用的对话请求，也作为流式请求的输入。
 // 使用接口默认的单条回复,不设置多候选参数。
 type ChatRequest struct {
 	Model     string    `json:"model"`
@@ -145,7 +144,7 @@ func (c ToolCall) DecodeArguments(dst any) error {
 }
 
 // ChatResponse 是模型服务对一次非流式请求的完整回复。
-// Choices 保留接口要求的数组结构,业务统一读取 Choices[0]。
+// 各 Provider 将服务回复转换为此结构，Agent 统一读取 Choices[0]。
 type ChatResponse struct {
 	ID      string   `json:"id"`
 	Model   string   `json:"model"`

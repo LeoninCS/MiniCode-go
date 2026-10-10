@@ -96,8 +96,7 @@ func TestClient_Chat_SendsFunctionToolSchema(t *testing.T) {
 					}
 				}
 			}
-		],
-		"max_tokens": 4096
+		]
 	}`, got.body)
 }
 

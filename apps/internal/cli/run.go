@@ -68,12 +68,17 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}()
 
-	client := provider.NewClient(provider.Config{
-		BaseURL: cfg.Model.BaseURL,
-		APIKey:  cfg.Model.APIKey,
-		Model:   cfg.Model.Name,
-		Tracer:  telemetryClient.Tracer(),
+	client, err := provider.New(provider.Config{
+		Provider: cfg.Model.Provider,
+		BaseURL:  cfg.Model.BaseURL,
+		APIKey:   cfg.Model.APIKey,
+		Model:    cfg.Model.Name,
+		Tracer:   telemetryClient.Tracer(),
 	})
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
+		return 2
+	}
 
 	// Ctrl+C 和 SIGTERM 结束整个进程;单轮超时由 timeout 单独控制。
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

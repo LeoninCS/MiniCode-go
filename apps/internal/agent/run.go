@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -38,7 +39,8 @@ const (
 // 持有工作区而不是每轮重建,是为了让 edit 工具的"先读后改"校验跨轮有效。
 type Session struct {
 	id          string
-	client      *provider.Client
+	client      provider.Provider
+	tracer      trace.Tracer
 	files       *tools.FileTools
 	registry    *tools.ToolRegistry
 	approver    ToolApprover
@@ -51,9 +53,16 @@ type Session struct {
 // bash、write、edit 执行前会调用可选的 approver；CLI 始终提供实现。
 // approver 为 nil 时直接执行工具。
 // 调用方负责在结束时调用 Close 释放工作区句柄。
-func NewSession(client *provider.Client, approver ToolApprover) (*Session, error) {
-	if client == nil {
-		return nil, errors.New("agent: nil client")
+func NewSession(client provider.Provider, approver ToolApprover) (*Session, error) {
+	if client == nil || (reflect.ValueOf(client).Kind() == reflect.Pointer && reflect.ValueOf(client).IsNil()) {
+		return nil, errors.New("agent: nil provider")
+	}
+	// 追踪是可选能力，Fake Provider 或其他协议实现无需依赖 OpenTelemetry。
+	tracer := trace.NewNoopTracerProvider().Tracer("minicode")
+	if traced, ok := client.(interface{ Tracer() trace.Tracer }); ok {
+		if configured := traced.Tracer(); configured != nil {
+			tracer = configured
+		}
 	}
 	// 只解析一次绝对路径:系统 Prompt 要声明工作区,文件工具也不再依赖运行期间的工作目录。
 	workspace, err := os.Getwd()
@@ -72,6 +81,7 @@ func NewSession(client *provider.Client, approver ToolApprover) (*Session, error
 	return &Session{
 		id:        uuid.NewString(),
 		client:    client,
+		tracer:    tracer,
 		files:     files,
 		registry:  registry,
 		approver:  approver,
@@ -83,7 +93,7 @@ func NewSession(client *provider.Client, approver ToolApprover) (*Session, error
 // OpenSessionByID 按 ID 恢复工作区内的存档；id 为空时创建并保存新会话。
 // 存档位于 .minicode/sessions/<id>.json，指定的 ID 不存在时返回错误。
 // 恢复只包含已完成的协议消息，不恢复进程、审批状态或文件读取缓存。
-func OpenSessionByID(client *provider.Client, approver ToolApprover, id string) (*Session, error) {
+func OpenSessionByID(client provider.Provider, approver ToolApprover, id string) (*Session, error) {
 	s, err := NewSession(client, approver)
 	if err != nil {
 		return nil, err
@@ -267,7 +277,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 		output.TaskDone(stats)
 	}()
 
-	ctx, turnSpan := s.client.Tracer().Start(ctx, "minicode turn",
+	ctx, turnSpan := s.tracer.Start(ctx, "minicode turn",
 		trace.WithAttributes(
 			attribute.String("langfuse.observation.type", "span"),
 			attribute.String("langfuse.observation.input", input),
@@ -322,7 +332,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 			stats.ToolCalls++
 			output.ToolStart(turnNumber, call)
 			started := time.Now()
-			toolCtx, toolSpan := s.client.Tracer().Start(ctx, "tool "+call.Function.Name,
+			toolCtx, toolSpan := s.tracer.Start(ctx, "tool "+call.Function.Name,
 				trace.WithAttributes(
 					attribute.String("langfuse.observation.type", "tool"),
 					attribute.String("tool.name", call.Function.Name),
@@ -393,7 +403,7 @@ func (s *Session) Close() error {
 }
 
 // summarizeAtTurnLimit 在完整工具结果之后请求一次总结,不再提供或执行工具。
-func summarizeAtTurnLimit(ctx context.Context, client *provider.Client, messages []provider.Message) (string, *provider.ChatResponse, error) {
+func summarizeAtTurnLimit(ctx context.Context, client provider.Provider, messages []provider.Message) (string, *provider.ChatResponse, error) {
 	messages = append(messages, provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, ""))
 	resp, err := client.Chat(ctx, provider.ChatRequest{Messages: messages})
 	if err != nil {
