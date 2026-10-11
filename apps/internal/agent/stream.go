@@ -10,9 +10,15 @@ import (
 	"github.com/MiniCode-go/minicode/internal/provider"
 )
 
-// chat 自动使用 Provider 的流式能力；完整结束前只交付预览事件，
+// chat 设置固定输出上限并自动使用 Provider 的流式能力；完整结束前只交付预览事件，
 // 不向历史写入或执行任何工具。
-func (s *Session) chat(ctx context.Context, req provider.ChatRequest, output Output) (*provider.ChatResponse, error) {
+func (s *Session) chat(ctx context.Context, req provider.ChatRequest, output Output) (resp *provider.ChatResponse, err error) {
+	req.MaxTokens = maxOutputTokens
+	defer func() {
+		if err == nil {
+			s.contextBudget.Record(req, resp)
+		}
+	}()
 	client, ok := s.client.(provider.StreamingProvider)
 	if !ok {
 		return s.client.Chat(ctx, req)

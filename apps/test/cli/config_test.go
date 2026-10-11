@@ -33,8 +33,8 @@ func TestMiniCode_Config(t *testing.T) {
 			if req.Model != "file-model" {
 				t.Errorf("model = %q", req.Model)
 			}
-			if req.MaxTokens != 0 {
-				t.Errorf("unexpected max tokens limit: %d", req.MaxTokens)
+			if req.MaxTokens != 8192 {
+				t.Errorf("max tokens limit = %d, want 8192", req.MaxTokens)
 			}
 			writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "loaded", ""), FinishReason: "stop"}}})
 		case "/api/public/otel/v1/traces":
@@ -95,6 +95,7 @@ func TestMiniCode_ConfigErrors(t *testing.T) {
 	}{
 		{name: "missing file does not use environment", wantCode: 2, wantError: "read config"},
 		{name: "model only disables tracing", content: valid},
+		{name: "no context window config", content: valid + "context_window = 262144\n", wantCode: 2, wantError: "cannot parse"},
 		{name: "missing fields", content: "[model]\n", wantCode: 2, wantError: "model.api_key, model.base_url, model.name"},
 		{name: "blank field", content: strings.Replace(valid, "'file-model'", "'  '", 1), wantCode: 2, wantError: "missing required config: model.name"},
 		{name: "unknown provider", content: valid + "provider = 'unknown'\n", wantCode: 2, wantError: "unsupported provider"},

@@ -221,6 +221,9 @@ func TestSession_StreamingFallbackOnlyForUnsupportedProviders(t *testing.T) {
 func TestSession_StreamsTurnLimitSummaryWithoutTools(t *testing.T) {
 	requests := 0
 	model := &fakeStreamingProvider{stream: func(ctx context.Context, req provider.ChatRequest) (provider.Stream, error) {
+		if req.MaxTokens != 8192 {
+			t.Fatalf("max tokens = %d, want 8192", req.MaxTokens)
+		}
 		requests++
 		if requests <= 500 {
 			return &fakeStream{events: []provider.StreamEvent{{ToolCalls: []provider.ToolCallDelta{{Index: 0, ID: "read", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "read", Arguments: `{"path":"missing-file"}`}}}, FinishReason: "tool_calls"}}}, nil

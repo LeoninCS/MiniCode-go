@@ -154,6 +154,9 @@ func TestSession_FakeProviderErrorsAndRecovery(t *testing.T) {
 func TestSession_FakeProviderTurnLimitSummary(t *testing.T) {
 	calls := 0
 	model := &fakeProvider{chat: func(ctx context.Context, request provider.ChatRequest) (*provider.ChatResponse, error) {
+		if request.MaxTokens != 8192 {
+			t.Fatalf("max tokens = %d, want 8192", request.MaxTokens)
+		}
 		calls++
 		if calls <= 500 {
 			call := provider.ToolCall{

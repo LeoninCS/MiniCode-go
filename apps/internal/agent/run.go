@@ -25,6 +25,8 @@ import (
 const (
 	maxTurns               = 500
 	turnLimitSummaryPrompt = "已达到工具执行轮数上限。请停止调用工具，仅根据已有对话和工具结果给出最终回复。回答用户的问题，并说明已完成的工作、尚未完成的部分及原因；不要声称未验证的结果。"
+	// maxOutputTokens 是每次模型调用的固定输出上限。
+	maxOutputTokens = 8 * 1024
 
 	// promptMarker 是每轮读取用户输入前打印的提示符。
 	promptMarker = "> "
@@ -41,15 +43,16 @@ const (
 // 历史在轮次之间累积,系统 Prompt 始终位于消息链首位。
 // 持有工作区而不是每轮重建,是为了让 edit 工具的"先读后改"校验跨轮有效。
 type Session struct {
-	id          string
-	client      provider.Provider
-	tracer      trace.Tracer
-	files       *tools.FileTools
-	registry    *tools.ToolRegistry
-	approver    ToolApprover
-	workspace   string
-	sessionPath string
-	messages    []provider.Message
+	id            string
+	client        provider.Provider
+	tracer        trace.Tracer
+	files         *tools.FileTools
+	registry      *tools.ToolRegistry
+	approver      ToolApprover
+	workspace     string
+	sessionPath   string
+	messages      []provider.Message
+	contextBudget compaction.TokenTrigger
 }
 
 // NewSession 打开工作区、注册内置工具,并把系统 Prompt 作为首条消息写入历史。
@@ -306,12 +309,12 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
 		turnNumber := turn + 1
+		req := provider.ChatRequest{Messages: s.messages, Tools: toolDefinitions}
+		s.compactIfNeeded(req, output)
+		req.Messages = s.messages
 		stats.ModelCalls++
 		output.ModelStart(turnNumber)
-		resp, err := s.chat(ctx, provider.ChatRequest{
-			Messages: s.messages,
-			Tools:    toolDefinitions,
-		}, output)
+		resp, err := s.chat(ctx, req, output)
 		if err != nil {
 			return err
 		}
@@ -411,8 +414,11 @@ func (s *Session) Close() error {
 
 // summarizeAtTurnLimit 在完整工具结果之后请求一次总结,不再提供或执行工具。
 func (s *Session) summarizeAtTurnLimit(ctx context.Context, output Output) (string, *provider.ChatResponse, error) {
-	messages := append(s.messages, provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, ""))
-	resp, err := s.chat(ctx, provider.ChatRequest{Messages: messages}, output)
+	instruction := provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, "")
+	req := provider.ChatRequest{Messages: append(s.messages, instruction)}
+	s.compactIfNeeded(req, output)
+	req.Messages = append(s.messages, instruction)
+	resp, err := s.chat(ctx, req, output)
 	if err != nil {
 		return "", nil, err
 	}
