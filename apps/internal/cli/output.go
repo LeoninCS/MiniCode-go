@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MiniCode-go/minicode/internal/agent"
@@ -15,10 +16,11 @@ import (
 
 // Output 将 Agent 的最终回复、任务错误和审批请求展示到 CLI。
 type Output struct {
-	stdout       io.Writer
-	stderr       io.Writer
-	interactive  bool
-	streamActive bool
+	stdout      io.Writer
+	stderr      io.Writer
+	interactive bool
+	streamMu    sync.Mutex
+	preview     *streamPreview
 }
 
 // NewOutput 创建 CLI 输出适配器。实时过程只展示在交互终端，避免污染管道输出。
@@ -34,23 +36,27 @@ func (o *Output) ModelStart(turn int) {
 	_, _ = fmt.Fprintf(o.stdout, "[turn %d] waiting for model\n", turn)
 }
 
-// StreamEvent 在交互终端的备用屏幕展示文本增量，管道只输出最终回复。
+// StreamEvent 累积文本，由备用屏幕定时渲染 Markdown；管道只输出最终回复。
 func (o *Output) StreamEvent(event provider.StreamEvent) {
 	if !o.interactive || event.Content == "" {
 		return
 	}
-	if !o.streamActive {
-		_, _ = io.WriteString(o.stdout, "\x1b[?1049h")
-		o.streamActive = true
+	o.streamMu.Lock()
+	defer o.streamMu.Unlock()
+	if o.preview == nil {
+		o.preview = newStreamPreview(o.stdout, event.Content)
+	} else {
+		o.preview.append(event.Content)
 	}
-	_, _ = io.WriteString(o.stdout, event.Content)
 }
 
 // StreamDone 恢复主屏幕，成功、失败与取消都需要清除临时预览。
 func (o *Output) StreamDone() {
-	if o.streamActive {
-		_, _ = io.WriteString(o.stdout, "\x1b[?1049l")
-		o.streamActive = false
+	o.streamMu.Lock()
+	defer o.streamMu.Unlock()
+	if o.preview != nil {
+		o.preview.close()
+		o.preview = nil
 	}
 }
 

@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	envGlamourStyle      = "GLAMOUR_STYLE"
-	defaultMarkdownStyle = "dracula"
-	defaultMarkdownWidth = 80
+	envGlamourStyle       = "GLAMOUR_STYLE"
+	defaultMarkdownStyle  = "dracula"
+	defaultMarkdownWidth  = 80
+	defaultTerminalHeight = 24
 )
 
 // RenderMarkdown 为终端渲染模型回复;非终端或渲染失败时保留原文。
@@ -22,19 +23,8 @@ func RenderMarkdown(stdout io.Writer, content string) string {
 		return plain
 	}
 
-	file := stdout.(*os.File)
-	width, _, err := term.GetSize(file.Fd())
-	if err != nil || width <= 0 {
-		width = defaultMarkdownWidth
-	}
-	style := os.Getenv(envGlamourStyle)
-	if style == "" {
-		style = defaultMarkdownStyle
-	}
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStylePath(style),
-		glamour.WithWordWrap(width),
-	)
+	width, _ := outputSize(stdout)
+	renderer, err := newMarkdownRenderer(width)
 	if err != nil {
 		return plain
 	}
@@ -43,6 +33,30 @@ func RenderMarkdown(stdout io.Writer, content string) string {
 		return plain
 	}
 	return rendered
+}
+
+func newMarkdownRenderer(width int) (*glamour.TermRenderer, error) {
+	style := os.Getenv(envGlamourStyle)
+	if style == "" {
+		style = defaultMarkdownStyle
+	}
+	return glamour.NewTermRenderer(
+		glamour.WithStylePath(style),
+		glamour.WithWordWrap(width),
+	)
+}
+
+func outputSize(stdout io.Writer) (width, height int) {
+	if IsTerminal(stdout) {
+		width, height, _ = term.GetSize(stdout.(*os.File).Fd())
+	}
+	if width <= 0 {
+		width = defaultMarkdownWidth
+	}
+	if height <= 0 {
+		height = defaultTerminalHeight
+	}
+	return width, height
 }
 
 // IsTerminal 判断输入或输出是否连接到终端。

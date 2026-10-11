@@ -86,6 +86,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	interactive := IsTerminal(stdin) && IsTerminal(stdout)
 	output := NewOutput(stdout, stderr, interactive)
+	defer output.StreamDone()
 	input, err := NewInput(stdin, stdout, stderr, interactive)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())

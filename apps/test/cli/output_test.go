@@ -61,17 +61,18 @@ func TestOutputHidesProcessInNonInteractiveMode(t *testing.T) {
 }
 
 func TestOutputStreamsPreviewAndRestoresMainScreen(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+	var stdout lockedBuffer
+	var stderr bytes.Buffer
 	output := cli.NewOutput(&stdout, &stderr, true)
+	t.Cleanup(output.StreamDone)
 	output.StreamEvent(provider.StreamEvent{Content: "第一段"})
-	if got := stdout.String(); got != "\x1b[?1049h第一段" {
-		t.Fatalf("first delta was not displayed: %q", got)
-	}
+	waitPreview(t, &stdout, "第一段")
 	output.StreamEvent(provider.StreamEvent{Content: "第二段"})
+	waitPreview(t, &stdout, "第二段")
 	output.StreamDone()
 	output.StreamDone() // 清理可重复调用，不输出重复控制序列。
 	output.Message("最终回复")
-	if got := stdout.String(); got != "\x1b[?1049h第一段第二段\x1b[?1049l最终回复\n" {
+	if got := stdout.String(); strings.Count(got, "\x1b[?1049h") != 1 || strings.Count(got, "\x1b[?1049l") != 1 || !strings.HasSuffix(got, "\x1b[?1049l最终回复\n") {
 		t.Fatalf("output = %q", got)
 	}
 	output.StreamEvent(provider.StreamEvent{ToolCalls: []provider.ToolCallDelta{{Function: provider.FunctionCall{Arguments: "secret"}}}})
