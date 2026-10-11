@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MiniCode-go/minicode/internal/compaction"
 	"github.com/MiniCode-go/minicode/internal/provider"
 	sessionstore "github.com/MiniCode-go/minicode/internal/session"
 	"github.com/MiniCode-go/minicode/internal/tools"
@@ -30,6 +31,8 @@ const (
 	// exitCommand 和 quitCommand 结束交互循环。
 	exitCommand = "/exit"
 	quitCommand = "/quit"
+	// compactCommand 手动触发上下文压缩。
+	compactCommand = "/compact"
 )
 
 // Session 保存一次会话的消息历史、工具注册表和工作区句柄,供连续多轮对话复用。
@@ -231,6 +234,10 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 				}
 				return 0
 			case "":
+				continue
+			case compactCommand:
+				s.messages = compaction.Compact(s.messages)
+				output.Message("已触发上下文压缩，当前压缩策略尚未实现，历史保持不变。")
 				continue
 			}
 			turnCtx, cancelTurn := context.WithTimeout(ctx, timeout)
