@@ -2,7 +2,7 @@
 
 > 目标：用 Go 实现一个面向学习的迷你版 Pi。  
 > 交互方式：CLI 优先。  
-> 当前状态：Day 0～Day 10 已完成。
+> 当前状态：Day 0～Day 11 已完成；Day 12 的工具分片处理已接入，打字机输出待实现。
 
 ## 状态标记
 
@@ -30,9 +30,11 @@ Day 0～Day 14 仍作为单 Agent 的 v0.1 路线；Subagent 与运行观测增�
 
 当前已接入可选的 Langfuse / OpenTelemetry 基础链路追踪，覆盖任务、模型请求与响应、工具参数与结果、usage、耗时和错误。Day 17 在此基础上补充会话关联、Subagent 执行图、效率分析和失败诊断。
 
-> 当前已完成：Day 0（规划）、Day 1（模型调用）、Day 2（工具协议）、Day 3（Agent Loop）、Day 4（内置工具与注册表）、Day 5（系统 Prompt 与交互会话）、Day 6（资源控制与执行审批）、Day 7（中断与取消）、Day 8（Token 统计与过程可视化）、Day 9（Session 持久化与恢复）、Day 10（Provider 抽象）。
+> 当前已完成：Day 0（规划）、Day 1（模型调用）、Day 2（工具协议）、Day 3（Agent Loop）、Day 4（内置工具与注册表）、Day 5（系统 Prompt 与交互会话）、Day 6（资源控制与执行审批）、Day 7（中断与取消）、Day 8（Token 统计与过程可视化）、Day 9（Session 持久化与恢复）、Day 10（Provider 抽象）、Day 11（SSE 流式解析与终端预览）。
 
-2026-10-10 完成 Day 10：Agent 依赖统一的 `Provider` 接口，配置工厂目前创建 OpenAI 兼容实现；公共响应、错误和 Fake Provider 测试已接入。流式接口与事件契约已定义，实际 SSE 解析仍属于 Day 11。模型输出 Token 上限配置和默认值已移除。
+2026-10-11 补齐 Day 11 实现记录：自动发送 SSE 请求，处理增量文本、工具分片、结束与独立用量事件；CLI 在交互终端预览文本，流结束后恢复主屏幕。断线、错误、取消和超时均关闭流，不写入半截 assistant 消息或执行未完成回复中的工具。工具分片的累积与校验已完成，Day 12 剩余打字机输出。
+
+2026-10-10 完成 Day 10：Agent 依赖统一的 `Provider` 接口，配置工厂创建 OpenAI 兼容实现；公共响应、错误和 Fake Provider 测试已接入。流式接口与事件契约为 Day 11 提供基础。模型输出 Token 上限配置和默认值已移除。
 
 2026-10-09 完成 Day 9：新会话默认生成 UUID，并将版本、工作区、任务状态和完整协议消息原子保存到 `.minicode/sessions/<id>.json`；`--session <id>` 可在同一工作区恢复，恢复时重新生成系统 Prompt，并严格校验 ID、版本、工作区以及工具调用与结果配对。
 
@@ -210,7 +212,7 @@ arguments: {"command":"go test ./..."}
 - ✅ CLI 实现集中到 `internal/cli`，通过 `Input` / `Output` 接口与 Agent 会话解耦；
 - ✅ 终端支持多行编辑、自动折行、上下光标移动和滚动显示，上下键不浏览历史；
 - ✅ `Shift+Enter` / `Ctrl+J` 插入换行，`Enter` 提交整段输入；管道输入仍逐行提交；
-- ✅ 运行过程使用备用屏幕，最终回答、错误和取消时恢复主屏幕。
+- ✅ 支持终端屏幕恢复；Day 11 已接入备用屏幕中的模型增量预览，流结束、错误和取消时恢复主屏幕。
 
 ### 产出
 
@@ -360,13 +362,13 @@ minicode --session 550e8400-e29b-41d4-a716-446655440000
 ### 内容
 
 - ✅ 定义 `Provider.Chat` 接口，Agent 和最终总结依赖接口，不依赖具体 `Client`；
-- ✅ 使用公共 `ChatRequest` 和 `ChatResponse` 表达非流式请求与响应，保留消息、工具调用与可选 usage；
+- ✅ 使用公共 `ChatRequest` 和 `ChatResponse` 表达请求与完整响应，保留消息、工具调用与可选 usage；
 - ✅ 定义可选的 `StreamingProvider.ChatStream`、`Stream.Recv/Close`、`StreamEvent` 和工具调用增量；
 - ✅ 模型服务的 HTTP 错误统一为 `APIError`，网络与 context 取消错误保留可追溯的错误链；
 - ✅ 通过 `provider.New` 选择实现并校验配置，`model.provider` 可选，默认为 `"openai"`；
 - ✅ 使用 Fake Provider 测试工具调用与历史、错误恢复、用量统计、500 轮上限及最终总结，不调用真实模型服务。
 
-当前实际适配器只有 OpenAI 兼容 Chat Completions 实现。兼容服务可通过地址、密钥和模型名切换；新增专用协议需实现 `Provider` 并接入配置工厂。`Client.ChatStream` 当前返回 `ErrStreamingUnsupported`，不发送 SSE 请求；流式解析和展示由 Day 11～Day 12 完成。
+当前实际适配器只有 OpenAI 兼容 Chat Completions 实现。兼容服务可通过地址、密钥和模型名切换；新增专用协议需实现 `Provider` 并接入配置工厂。Day 11 已实现 `Client.ChatStream` 的 SSE 请求与解析，Agent 自动使用流式能力。
 
 ### 产出
 
@@ -374,7 +376,7 @@ Agent Loop 和工具系统可以复用同一个模型调用接口；新增适配
 
 ---
 
-## Day 11：SSE 流式解析 ⬜
+## Day 11：SSE 流式解析 ✅
 
 ### 目标
 
@@ -382,21 +384,27 @@ Agent Loop 和工具系统可以复用同一个模型调用接口；新增适配
 
 ### 内容
 
-- 建立 SSE HTTP 请求；
-- 解析 event 和 data；
-- 处理增量文本；
-- 处理结束事件；
-- 处理流式错误；
-- 支持网络中断；
-- 将流式事件传递给 CLI。
+- ✅ 建立 SSE HTTP 请求，发送 `stream: true` 和 `stream_options.include_usage: true`；
+- ✅ 按空行分隔事件，解析 `event` / `data`，合并多行数据；支持 LF、CRLF、CR、BOM、注释及长事件，并限制单个事件大小；
+- ✅ 处理增量文本、按索引关联的工具分片和最终用量；
+- ✅ 读取到 `[DONE]` 才结束，`finish_reason` 后继续接收可能单独返回的 `usage`；
+- ✅ 处理 HTTP / SSE 业务错误、JSON 解析错误、提前断线与异常结束；
+- ✅ 支持 context 取消、超时和并发关闭，关闭流可中断阻塞读取；
+- ✅ 通过可选的 `StreamOutput` 把增量传给 CLI，流结束或失败时清理预览；
+- ✅ 自动使用 Provider 的流式能力，不设置 CLI 或 Session 流式开关；仅不具备该能力或明确返回 `ErrStreamingUnsupported` 的 Provider 回退到 `Chat`；
+- ✅ 保留任务用量统计和 Langfuse 追踪，并覆盖 Provider、Agent、CLI、会话存档及 PTY 终端恢复测试。
 
 ### 产出
 
-模型输出不再需要等待完整响应，而是可以逐步显示。
+交互终端在备用屏幕即时预览模型文本，完整最终回复随后在主屏幕渲染 Markdown；非交互输出只交付完整回复，不包含增量预览。工具状态及审批信息沿用现有展示规则。
+
+为保持四个内置工具在流式模式下可用，本阶段同时接入了工具名称、参数累积和完整校验；流失败时不执行该次回复中的工具，也不将半截 assistant 消息写入历史。
+
+实现见 `apps/internal/provider/openai_stream.go`、`apps/internal/agent/stream.go` 和 `apps/internal/cli/output.go`。流式回归入口位于 `apps/test/provider/openai_stream_test.go`、`apps/test/agent/stream_test.go`、`apps/test/cli/stream_test.go` 及 `apps/test/cli/run_terminal_test.go`。
 
 ---
 
-## Day 12：tool_calls 参数分片累积 + 打字机输出 ⬜
+## Day 12：tool_calls 参数分片累积 + 打字机输出 🔄
 
 ### 目标
 
@@ -404,13 +412,15 @@ Agent Loop 和工具系统可以复用同一个模型调用接口；新增适配
 
 ### 内容
 
-- 累积分片的工具名称；
-- 累积分片的工具参数；
-- 处理参数 JSON 尚未完整的中间状态；
-- 在工具参数完整后再执行工具；
-- 实现文本打字机输出；
-- 区分文本增量和工具调用增量；
-- 处理流式响应结束前的异常。
+- ✅ 累积分片的工具名称；
+- ✅ 累积分片的工具参数，支持多个调用交错返回并按索引恢复顺序；
+- ✅ 处理参数 JSON 尚未完整的中间状态，不在接收片段时执行工具；
+- ✅ 整条流正常结束后校验工具 ID、类型、名称、JSON 参数和结束原因，再进入审批与执行；
+- ⬜ 实现文本打字机输出；
+- ✅ 区分文本增量和工具调用增量，CLI 只预览文本；
+- ✅ 处理流式响应结束前的异常，关闭流并丢弃未完成回复。
+
+工具分片与执行前校验已随 Day 11 接入。当前文本按服务端事件即时显示，逐字符打字机效果尚未实现，因此本阶段仍标记为进行中。
 
 ### 产出
 
@@ -573,7 +583,7 @@ CLI 可以像终端 Agent 一样边生成边显示，并在参数接收完整后
 
 ## 功能完成情况
 
-当前仓库已完成 Day 0～Day 10，具备非流式 Agent、四个内置工具、CLI 交互、会话持久化及 Provider 抽象：
+当前仓库已完成 Day 0～Day 11，具备流式 Agent、四个内置工具、CLI 交互、会话持久化及 Provider 抽象：
 
 - ✅ 项目定位与范围规划；
 - ✅ 基础功能清单；
@@ -584,14 +594,16 @@ CLI 可以像终端 Agent 一样边生成边显示，并在参数接收完整后
 - ✅ 已支持 bash / read / write / edit 四个内置工具与通用工具注册表；
 - ✅ Agent Loop；
 - ✅ CLI 交互（多行编辑 + 光标移动 + 位置参数 + 管道输入 + 跨轮会话内记忆）；
-- ✅ 终端输出隔离（备用屏幕展示运行过程，主屏幕保留最终回答）；
+- ✅ 终端输出隔离（备用屏幕预览模型增量文本，主屏幕保留最终回答、工具状态与审批信息）；
 - ✅ 资源控制（工具输出截断、500 轮上限、单轮超时、Ctrl+C 取消）；
 - ✅ 执行前确认（`bash` / `write` / `edit` 默认逐次审批，拒绝结果回传模型，支持 `--yes` 自动批准；不提供命令黑名单或硬拦截）；
 - ✅ token 统计与过程可视化（按任务汇总 usage、模型/工具调用次数与耗时；缺失或部分 usage 会明确标记）；
 - ✅ 可选 Langfuse / OpenTelemetry 基础链路追踪（任务、模型请求与响应、工具调用、用量、耗时和错误）；
 - ✅ Session 持久化与恢复（版本化 JSON、工作区与消息配对校验、原子写入）；
 - ✅ Provider 抽象（配置工厂、公共响应与错误、Fake Provider 测试；当前使用 OpenAI 兼容适配器）；
-- ⬜ SSE 流式处理；
+- ✅ SSE 流式处理（自动启用、增量预览、用量事件、错误与中断、完整响应聚合）；
+- ✅ 工具调用分片累积与完整校验（随 Day 11 接入）；
+- ⬜ 逐字符打字机输出（Day 12 剩余工作）；
 - ⬜ 上下文压缩；
 - ⬜ Subagent 任务委派与独立上下文（Day 15，v0.1 之后）；
 - ⬜ Subagent 并行调度、过程展示与恢复（Day 16，v0.1 之后）；

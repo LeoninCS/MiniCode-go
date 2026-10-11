@@ -20,8 +20,14 @@ apps/                                # Go module 根(不是仓库根)
 ├── internal/cli/                    # CLI 参数、输入、终端展示和 Markdown 渲染
 │   ├── run.go                       # 配置、信号与会话组装
 │   ├── input.go / input_display.go  # 多行编辑、按键与显示
-│   └── output.go / markdown.go      # 备用屏幕、输出与 Markdown
-├── internal/agent/                  # 模型循环与消息历史
+│   ├── approval.go                  # 工具审批与自动批准
+│   └── output.go / markdown.go      # 流式预览、输出与 Markdown
+├── internal/agent/                  # 模型循环、消息历史与会话恢复
+│   ├── run.go / prompt.go           # 会话、任务循环与系统 Prompt
+│   ├── stream.go                    # 自动选择流式能力、聚合文本与工具参数
+│   └── output.go / approval.go      # 展示、统计、流式预览与审批接口
+├── internal/config/                 # 固定路径 TOML 配置读取与校验
+├── internal/session/                # 会话快照校验、读取与原子保存
 ├── internal/tools/                  # 工具实现 + 注册机制
 │   ├── registry.go                  # Tool、ToolRegistry、参数公共校验
 │   ├── bash.go                      # RunBash + execute*Tool + build*Tool
@@ -30,12 +36,14 @@ apps/                                # Go module 根(不是仓库根)
 ├── internal/provider/               # Provider 抽象 + OpenAI 兼容客户端(纯源码,无 _test.go)
 │   ├── provider.go                  # 接口、流式契约与配置工厂
 │   ├── types.go                     # 公共消息、响应、工具调用与错误
-│   └── openai.go
+│   ├── openai.go                    # 非流式调用与共用请求校验
+│   └── openai_stream.go             # SSE 请求、解析、取消与关闭
+├── internal/telemetry/              # OpenTelemetry / Langfuse 追踪配置
 └── test/                            # 测试单独目录,black-box
     ├── cli/                        # CLI、输入、终端显示与退出
-    ├── agent/                      # Agent 输出边界与错误回传
+    ├── agent/                      # Agent、流式聚合、错误回传与持久化
     ├── tools/                      # 工具行为与取消
-    └── provider/                   # 模型协议与客户端
+    └── provider/                   # 模型协议、SSE、取消与追踪
 ```
 
 - 后续 Day:源码 `apps/internal/<name>/`,测试 `apps/test/<name>/`,同名目录
@@ -92,7 +100,7 @@ apps/                                # Go module 根(不是仓库根)
 - **模型输出策略（2026-10-10 调整）**：普通 Agent 请求和达到轮数上限后的总结不设置 `max_tokens`，使用模型服务的默认输出长度。底层 `ChatRequest.MaxTokens` 保留为显式请求字段，值为 0 时不发送，客户端不自动填充或覆盖。
 - **实现范围**：简单循环和 bash 执行函数，不提前引入工具注册表、交互会话和持久化。
 - **职责划分（按当前实现更新）**：`internal/agent` 管理模型循环、消息历史、轮数和工具分发；工具协议适配与注册表位于 `internal/tools`。`internal/cli` 负责参数、输入、任务取消、展示和退出码，`cmd/minicode` 只保留启动入口。
-- **展示边界**：Agent 通过 `Output` 接口交付模型文本、工具调用、实时输出、结果和工具错误；不依赖终端渲染，不打印 CLI 前缀。终止任务的错误由 `Run` 返回。
+- **展示边界**：Agent 通过 `Output` 交付最终文本、模型与工具状态及任务统计，通过可选的 `StreamOutput` 交付增量预览；不依赖终端渲染。工具原始结果回传模型并进入历史，审批信息由 CLI 展示；终止任务的错误由 `Turn` 返回，`Run` 通过 `ToolError` 展示并决定退出码。
 
 ### CLI Markdown 渲染
 
@@ -106,7 +114,7 @@ apps/                                # Go module 根(不是仓库根)
 - **显示一致性**：复用 readline 的缓冲区编辑和 raw 模式，由 `inputDisplay` 统一计算真实换行、软折行、显示列和滚动区域；垂直移动使用同一套显示行布局。
 - **键盘协议生命周期**：只在编辑输入时启用扩展键盘协议，转换编码后的 Ctrl+C，并在离开 raw 模式时恢复。模型和工具执行期间不得遗留该协议。
 - **取消语义**：Ctrl+C 退出整个会话；任务返回后根 context 已取消时，不再启动下一次输入 goroutine，避免退出时重新进入 raw 模式。
-- **输出生命周期**：运行过程放在备用屏幕，最终回答前及错误、超时、取消路径均恢复主屏幕；非交互模式保留完整输出。
+- **当前输出生命周期（Day 11 调整）**：模型文本增量放在备用屏幕，每次流结束或发生错误、超时、取消时恢复主屏幕；完整最终回答、工具状态和审批信息留在主屏幕。非交互模式不展示流式预览或过程状态。
 - **验证边界**：除提交内容外，还需覆盖 PTY 中的实际显示与光标，以及进程退出后的键盘协议和屏幕恢复；测试入口位于 `apps/test/cli/`。
 
 ### Day 8 任务统计（2026-10-08）
@@ -125,12 +133,23 @@ apps/                                # Go module 根(不是仓库根)
 
 ### Day 10 Provider 抽象（2026-10-10）
 
-- **调用边界**：Agent 的 Session 和最终总结只依赖 `Provider.Chat(context.Context, ChatRequest)`；消息历史、工具审批和执行仍由 Agent 管理。
+- **调用边界**：Agent 的 Session 和最终总结依赖 `Provider` 抽象，不依赖具体客户端；Day 11 已接入可选的 `StreamingProvider`。消息历史、工具审批和执行仍由 Agent 管理。
 - **协议选择**：CLI 通过 `provider.New` 创建实现，空值或 `"openai"` 选择 OpenAI 兼容客户端，未知协议报错。新增专用协议需要实现 `Provider` 并接入工厂，不能仅添加 Schema。
 - **统一数据与错误**：复用 `ChatRequest`、`ChatResponse`、`Message`、工具调用和可选 `Usage`；服务 HTTP 错误转换为 `APIError`，网络与取消错误保留原有错误链。
-- **流式契约**：`StreamingProvider` 是可选能力，定义 `ChatStream`、`Recv/Close` 和文本、工具调用参数的增量事件。当前客户端返回 `ErrStreamingUnsupported`；SSE 请求与解析仍留待 Day 11。
+- **流式契约**：`StreamingProvider` 是可选能力，定义 `ChatStream`、`Recv/Close` 和文本、工具调用参数的增量事件；Day 11 已实现 OpenAI 兼容客户端的 SSE 请求与解析。
 - **测试替身**：Fake Provider 只需实现 `Chat`，按测试预设返回文本、工具调用、usage 或错误，无需 API Key 或真实 HTTP 请求；测试覆盖真实 read 工具、跨轮历史、错误恢复及轮数上限后的总结。
 - **追踪可选**：Provider 接口不要求实现 `Tracer()`；实现提供它时 Agent 复用 tracer，否则使用 no-op tracer。
+
+### Day 11 SSE 流式调用（2026-10-11 同步）
+
+- **自动启用**：普通任务和轮数上限后的总结自动使用 Provider 的流式能力，不增加 CLI、配置文件或 Session 开关。不支持流式的 Provider 可使用 `Chat`；API、网络与解析错误不能自动重发为非流式请求。
+- **请求协议**：发送 `stream: true`、`stream_options.include_usage: true` 和 `Accept: text/event-stream`；与非流式调用共用参数校验及默认模型选择。
+- **事件解析**：按空行分隔，解析 `event` 和 `data`，支持多行数据、LF / CRLF / CR、首行 BOM、注释及心跳；单个 SSE 事件限制为 4 MiB，只接受索引为 0 的单候选回复。
+- **结束与用量**：正常结束必须收到 `[DONE]`；`finish_reason` 不关闭流，后面可能还有独立 `usage` 事件。提前 EOF 是错误，不能当作完整回复。
+- **执行边界**：按工具索引累积名称和参数，要求索引连续、ID 和类型稳定；完整结束后复用协议校验，再进入审批及执行。参数片段和临时文本不写入消息历史，流失败时不执行该次回复中的工具。
+- **展示边界**：`StreamOutput` 仅负责实时预览与清理。终端在备用屏幕展示原文增量，最终完整回复在主屏幕渲染 Markdown；管道不展示预览。当前没有逐字符打字机效果，Day 12 尚未全部完成。
+- **资源与追踪**：每条流都需要关闭，context 取消或并发 `Close` 必须中断读取；成功、错误、超时和取消均清理预览并结束 generation span。最终用量计入任务统计，完整事件数据及错误继续上报 Langfuse。
+- **测试覆盖**：Provider 验证真实 HTTP 分片、事件分隔、长文本、用量、异常、取消与追踪；Agent 验证交错工具分片、完整结束前不执行、失败后可继续和最终总结；CLI 验证自动流式请求、存档、统计、管道输出及 PTY 中断恢复。HTTP 测试服务直接返回 SSE，不依赖关闭流式的参数。
 
 ## 6. 已知陷阱
 
@@ -141,5 +160,6 @@ apps/                                # Go module 根(不是仓库根)
 5. 用户偏好:微信端纯文本;commit 用 `conventional + 中文 subject`;能查文件/plan/spec 就查,不替用户瞎猜
 6. `agent.Session.Run` 按轮启动 `Input.Readline`，任务执行期间不预读下一轮输入；执行前确认复用同一个输入适配器，必须避免并发读取 stdin。管道模式会把审批答案作为输入消费，自动化场景可显式使用 `--yes`
 7. 终端模拟器 vt10x 会把 Kitty 协议开关误解为光标恢复；显示测试需忽略这两个控制序列，协议配对和退出恢复必须另由输入及 CLI 子进程测试检查
+8. 流式 `finish_reason` 后可能还有 `usage`，不能提前关闭；缺少 `[DONE]` 或工具参数尚未收齐时不能执行工具、输出最终回复或保存半截 assistant 消息
 
 任何与本规范冲突的改动,先改本文件,再改实现。

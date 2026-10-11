@@ -90,7 +90,7 @@ name = "deepseek-chat"
 
 `model.provider` 选择调用协议，当前仅支持 `"openai"`，省略或留空时也使用该协议。这里的 `openai` 表示 OpenAI 兼容的 Chat Completions 接口；使用其他兼容服务时，填写对应的地址、密钥和模型名即可。Anthropic / Gemini 专用协议尚未实现，填写其他 `provider` 值会报错。
 
-当前模型调用为非流式。默认请求不设置 `max_tokens`，模型输出长度使用服务端默认值。
+模型调用自动使用 SSE 流式响应，无需额外配置，也不提供流式开关；模型服务需要支持 OpenAI 兼容的流式 Chat Completions。默认请求不设置 `max_tokens`，模型输出长度使用服务端默认值。
 
 > MiniCode 的工作区就是启动命令时的目录。因此在其他项目中运行时，需要在该项目中创建 `apps/config/config.toml`；配置文件路径目前不可自定义。
 
@@ -160,19 +160,27 @@ minicode
 - ✅ Day 7：已完成 Ctrl+C / SIGTERM 中断、context 取消链路，以及中断、超时和普通失败的提示区分；
 - ✅ Day 8：已完成 token 统计和过程可视化；
 - ✅ Day 9：新会话默认按 UUID 自动保存，并支持通过 `--session <id>` 跨进程恢复；
-- ✅ Day 10：Provider 接口、配置工厂、统一响应与错误，以及 Fake Provider 测试；已定义流式契约，实际 SSE 解析留待 Day 11；
-- ⬜ Day 11：SSE 流式解析；
-- ⬜ Day 12：tool_calls 参数分片累积与打字机输出；
+- ✅ Day 10：Provider 接口、配置工厂、统一响应与错误，以及 Fake Provider 测试；
+- ✅ Day 11：SSE 请求与事件解析、终端增量预览、用量事件、错误与中断处理；
+- 🔄 Day 12：tool_calls 参数分片累积与校验已在 Day 11 接入，打字机输出待实现；
 - ⬜ Day 13：上下文压缩触发与摘要；
 - ⬜ Day 14：压缩切分点合法性处理。
 
 ## 最近更新
 
+### 2026-10-11
+
+- 补齐 Day 11 实现记录：普通启动自动使用 SSE 流式请求，无需配置开关；
+- 终端在备用屏幕逐段预览模型文本，流结束后恢复主屏幕并渲染完整 Markdown；管道和文件输出保留完整回复，不写入增量预览；
+- 按工具索引累积名称与参数，完整结束并校验通过后才执行工具；提前断线不写入半截 assistant 消息，也不执行该次回复中的工具；
+- 读取到 `[DONE]` 后结束，保留文本结束后的独立 `usage` 事件；流式调用继续接入任务统计和 Langfuse 追踪；
+- 补充 SSE 分隔、长事件、工具分片、错误、断线、超时、取消、会话保存和 PTY 终端恢复测试；Day 12 剩余打字机输出。
+
 ### 2026-10-10
 
 - 完成 Day 10 Provider 抽象：Agent 通过 `Provider.Chat` 调用模型，CLI 通过 `provider.New` 按配置创建实现；
 - 当前实际适配器支持 OpenAI 兼容 Chat Completions 协议，可复用它调用兼容服务；其他专用协议仍需新增适配器；
-- 定义可选的 `StreamingProvider`、`Stream` 和增量事件；当前 `ChatStream` 返回 `ErrStreamingUnsupported`，尚未实现流式输出；
+- 定义可选的 `StreamingProvider`、`Stream` 和增量事件，为 Day 11 的 SSE 实现提供接口；
 - 使用 Fake Provider 验证工具调用、历史、错误恢复、用量统计及轮数上限后的总结，无需真实模型服务；
 - 移除模型输出 Token 上限配置和默认值，普通请求与最终总结均使用模型服务的默认输出长度。
 
@@ -248,12 +256,17 @@ MiniCode-go/
     │   ├── run.go                    # 配置、信号和会话组装
     │   ├── input.go                  # 多行编辑、按键与终端模式
     │   ├── input_display.go          # 折行、光标定位与滚动显示
-    │   ├── output.go                 # 运行过程与最终回答展示
+    │   ├── approval.go               # 副作用工具审批与自动批准
+    │   ├── output.go                 # 流式预览、运行状态与最终回答展示
     │   └── markdown.go               # 终端检测与 Markdown 渲染
     ├── internal/agent/                 # Agent Loop、模型调用与工具执行
     │   ├── run.go                      # Session、交互循环与持久化接入
     │   ├── prompt.go                   # 系统 Prompt
-    │   └── output.go                   # Agent 输出接口
+    │   ├── approval.go                 # 工具审批接口
+    │   ├── stream.go                   # 自动流式调用与完整响应聚合
+    │   └── output.go                   # 最终输出、统计与流式预览接口
+    ├── internal/config/                # TOML 配置读取与校验
+    │   └── config.go
     ├── internal/session/               # Session 快照格式、校验和文件存储
     │   └── store.go                    # JSON 读取与原子写入
     ├── internal/tools/                 # 工具实现 + 注册机制
@@ -266,13 +279,17 @@ MiniCode-go/
     ├── internal/provider/              # Provider 抽象 + OpenAI 兼容客户端(纯源码)
     │   ├── provider.go                 # 接口、流式契约与配置工厂
     │   ├── types.go                    # 公共消息、响应、工具调用与错误
-    │   └── openai.go
+    │   ├── openai.go                   # 非流式 HTTP 调用与共用请求校验
+    │   └── openai_stream.go            # SSE 请求、事件解析、取消与关闭
+    ├── internal/telemetry/             # OpenTelemetry / Langfuse 追踪配置
+    │   └── langfuse.go
     └── test/                           # 测试文件单独目录(black-box)
         ├── cli/                       # CLI、输入、终端显示与退出测试
         ├── agent/                     # Agent、Fake Provider 与持久化测试
         │   ├── agent_test.go
         │   ├── run_test.go
-        │   └── session_store_test.go
+        │   ├── session_store_test.go
+        │   └── stream_test.go          # 自动流式调用、聚合与失败回滚
         ├── tools/                      # 文件工具、bash 与注册表测试
         │   ├── bash_test.go
         │   ├── read_test.go
@@ -283,6 +300,7 @@ MiniCode-go/
         └── provider/
             ├── provider_test.go        # 配置工厂与流式能力边界
             ├── openai_test.go
+            ├── openai_stream_test.go   # SSE 协议、错误、取消与追踪
             └── tool_calls_test.go
 ```
 
@@ -331,30 +349,34 @@ minicode --session 550e8400-e29b-41d4-a716-446655440000
 
 `--session` 接收会话 ID，不接收文件路径；ID 必须是标准小写 UUID，且对应存档必须已经存在。恢复时会重新生成系统 Prompt，并恢复已完成的协议消息；不会恢复运行中的进程、审批状态或文件工具的读取缓存。Session 文件可能包含源码、命令输出和其他敏感信息，请勿提交到 Git；`.minicode/` 已被本仓库忽略。
 
-终端中的模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具调用信息和命令输出原样显示。
+终端中的完整模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具审批信息按原文展示，工具结果回传模型并保存在会话历史中。
 
-当标准输入和标准输出都连接终端时，运行过程显示在备用屏幕中；收到最终回答、发生错误或取消任务时恢复原屏幕。最终回答留在主屏幕，中间工具输出不写入主屏幕的滚动历史。每项任务结束后会显示一行累计统计，例如：
+流式接收自动启用。当标准输入和标准输出都连接终端时，模型文本增量按收到的事件在备用屏幕中即时预览；每次模型流结束、报错、超时或取消时恢复主屏幕。完整最终回答随后在主屏幕渲染 Markdown，工具状态和审批信息也在主屏幕展示。当前按服务端分片显示，逐字符打字机效果仍在 Day 12 计划中。
+
+工具调用的名称和 JSON 参数按索引累积，只有整条响应正常结束且所有调用校验通过后，才进入审批和执行。提前断线会报告任务失败，该次未完成的 assistant 回复和工具调用不会写入历史；此前已完成的步骤仍保留。
+
+每项任务结束后会显示一行累计统计，例如：
 
 ```text
 [统计] 2.3 秒 ｜ 模型 2 次 ｜ 工具 1 次 ｜ Token 3,740（输入 3,200 / 输出 540）
 ```
 
-统计包括任务耗时、模型调用次数、工具调用次数，以及模型响应中 `usage` 的输入、输出和总 token 之和。模型完全不返回 `usage` 时显示 `Token 不可用`；只有部分模型响应携带 `usage` 时在统计末尾显示 `（部分统计）`。若服务返回的 `total_tokens` 为 `0`，但输入或输出 token 非零，MiniCode 会用两者之和补全本次总数。
+统计包括任务耗时、模型调用次数、工具调用次数，以及模型响应中 `usage` 的输入、输出和总 token 之和。流式请求会请求用量信息，并接收文本结束后单独返回的 `usage` 事件。模型完全不返回 `usage` 时显示 `Token 不可用`；只有部分模型响应携带 `usage` 时在统计末尾显示 `（部分统计）`。若服务返回的 `total_tokens` 为 `0`，但输入或输出 token 非零，MiniCode 会用两者之和补全本次总数。
 
-非交互模式下最终回答仍单独写入标准输出，任务统计写入标准错误，便于将回答通过管道交给其他程序：
+非交互模式不展示流式预览和过程状态，完整回答写入标准输出，会话标识、任务统计和错误写入标准错误。执行审批的说明和参数仍按下文规则展示。可以将回答保存到文件：
 
 ```bash
 minicode "分析这个项目" >answer.md 2>run.log
 ```
 
-CLI 支持普通文本回复和 `bash` / `read` / `write` / `edit` 四个工具。模型请求工具时，会先打印调用信息；`bash`、`write`、`edit` 默认等待用户批准，`read` 可直接执行。批准后程序展示输出并把结果回传模型；拒绝时不执行工具，并把拒绝结果回传模型。使用 `--yes` 可以自动批准所有副作用工具调用，例如：
+CLI 支持普通文本回复和 `bash` / `read` / `write` / `edit` 四个工具。`bash`、`write`、`edit` 执行前展示调用信息并默认等待用户批准，`read` 可直接执行。批准后执行工具并把结果回传模型；拒绝时不执行工具，并把拒绝结果回传模型。使用 `--yes` 可以自动批准所有副作用工具调用，仍会展示审批说明和参数，例如：
 
 ```text
 tool: bash
 arguments: {"command":"go test ./..."}
 ```
 
-命令通过 `bash -c` 在启动 CLI 时的工作目录执行，标准输出和错误输出会合并显示。每次调用使用独立的非交互 shell，`cd` 不会影响下一次调用；当前工作目录不是文件系统沙箱。项目不检查命令内容，也不提供危险命令黑名单或硬拦截；命令安全边界是默认开启的逐次用户审批。`--yes` 会跳过审批，因此只应在用户信任模型生成操作的场景使用。
+命令通过 `bash -c` 在启动 CLI 时的工作目录执行，标准输出和错误输出合并为工具结果回传模型。每次调用使用独立的非交互 shell，`cd` 不会影响下一次调用；当前工作目录不是文件系统沙箱。项目不检查命令内容，也不提供危险命令黑名单或硬拦截；命令安全边界是默认开启的逐次用户审批。`--yes` 会跳过审批，因此只应在用户信任模型生成操作的场景使用。
 
 每项任务最多进行 500 轮可使用工具的模型请求。达到上限后，再请求一次不带工具的最终总结；若总结失败或为空，则输出停止说明。达到上限仍返回非零退出码。普通模型请求和最终总结均使用服务端默认的输出长度。`-timeout` 默认 1 小时，覆盖模型请求、命令执行和最终总结。Ctrl+C 或超时会终止当前命令进程组；单次工具输出最多保留 64 KiB，并标记截断。命令失败的输出和错误也会回传模型。
 
@@ -366,4 +388,4 @@ go -C apps run ./cmd/minicode
 go -C apps test -count=1 ./test/...
 ```
 
-执行前审批和会话持久化已经接入；流式输出和上下文压缩仍在后续计划中。工具实现与注册机制见 `apps/internal/tools/`。
+执行前审批、会话持久化和 SSE 流式输出已经接入；逐字符打字机输出和上下文压缩仍在后续计划中。工具实现与注册机制见 `apps/internal/tools/`。
