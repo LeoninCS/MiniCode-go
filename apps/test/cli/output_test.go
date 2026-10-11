@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,42 @@ func TestOutputHidesProcessInNonInteractiveMode(t *testing.T) {
 	output.Message("final")
 	if got, want := stdout.String(), "final\n"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestOutputStreamsPreviewAndRestoresMainScreen(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	output := cli.NewOutput(&stdout, &stderr, true)
+	output.StreamEvent(provider.StreamEvent{Content: "第一段"})
+	if got := stdout.String(); got != "\x1b[?1049h第一段" {
+		t.Fatalf("first delta was not displayed: %q", got)
+	}
+	output.StreamEvent(provider.StreamEvent{Content: "第二段"})
+	output.StreamDone()
+	output.StreamDone() // 清理可重复调用，不输出重复控制序列。
+	output.Message("最终回复")
+	if got := stdout.String(); got != "\x1b[?1049h第一段第二段\x1b[?1049l最终回复\n" {
+		t.Fatalf("output = %q", got)
+	}
+	output.StreamEvent(provider.StreamEvent{ToolCalls: []provider.ToolCallDelta{{Function: provider.FunctionCall{Arguments: "secret"}}}})
+	output.StreamDone()
+	if stderr.Len() != 0 || strings.Contains(stdout.String(), "secret") {
+		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
+	}
+}
+
+func TestOutputPipesOnlyCompletedText(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	output := cli.NewOutput(&stdout, &stderr, false)
+	output.StreamEvent(provider.StreamEvent{Content: "中间过程"})
+	output.StreamEvent(provider.StreamEvent{Content: "partial final"})
+	output.StreamDone()
+	if stdout.Len() != 0 {
+		t.Fatalf("preview leaked into pipe: %q", stdout.String())
+	}
+	output.Message("完整回复")
+	if stdout.String() != "完整回复\n" || stderr.Len() != 0 {
+		t.Fatalf("stdout = %q, stderr = %q", stdout.String(), stderr.String())
 	}
 }
 

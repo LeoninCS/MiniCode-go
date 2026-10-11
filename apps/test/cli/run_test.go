@@ -29,8 +29,7 @@ func TestMiniCode_Responses(t *testing.T) {
 				t.Errorf("decode request: %v", err)
 			}
 			requestCh <- req
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`)
+			writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "hello", ""), FinishReason: "stop"}}})
 		}))
 		defer srv.Close()
 
@@ -84,7 +83,7 @@ func TestMiniCode_Responses(t *testing.T) {
 				t.Fatalf("messages = %+v", req.Messages)
 			}
 			message := req.Messages[2]
-			if message.Role != provider.RoleAssistant || len(message.ToolCalls) != 1 || message.ToolCalls[0] != call || message.Text() != assistant.Text() || (message.Content == nil) != (tc.content == nil) {
+			if message.Role != provider.RoleAssistant || len(message.ToolCalls) != 1 || message.ToolCalls[0] != call || message.Text() != assistant.Text() {
 				t.Fatalf("assistant message was not preserved: %+v", message)
 			}
 			result := req.Messages[3]
@@ -266,8 +265,7 @@ func TestMiniCode_Responses(t *testing.T) {
 
 	t.Run("empty response", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`)
+			writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "", ""), FinishReason: "stop"}}})
 		}))
 		defer srv.Close()
 
@@ -282,8 +280,7 @@ func TestMiniCode_Responses(t *testing.T) {
 
 	t.Run("invalid tool arguments", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"bash","arguments":"not-json"}}]},"finish_reason":"tool_calls"}]}`)
+			writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "call_1", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: "not-json"}}}}, FinishReason: "tool_calls"}}})
 		}))
 		defer srv.Close()
 
@@ -326,7 +323,7 @@ func TestMiniCode_TaskStats(t *testing.T) {
 				Function: provider.FunctionCall{Name: "read", Arguments: `{"path":"missing"}`},
 			}}}
 		}
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{
+		writeStreamResponse(w, provider.ChatResponse{
 			Choices: []provider.Choice{{Message: message}},
 			Usage:   &provider.Usage{PromptTokens: index * 10, CompletionTokens: index, TotalTokens: index * 11},
 		})
@@ -525,8 +522,7 @@ func TestMiniCode_InteractiveSession(t *testing.T) {
 				_, _ = io.WriteString(w, `{"error":{"code":"invalid_api_key","message":"bad key"}}`)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{
+			writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{
 				{Message: provider.NewMessage(provider.RoleAssistant, "恢复了", "")},
 			}})
 		}))
@@ -662,25 +658,30 @@ func conversationServer(t *testing.T, replies ...provider.Message) (*httptest.Se
 	requests := make(chan provider.ChatRequest, len(replies)+1)
 	var count atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req provider.ChatRequest
+		var req struct {
+			provider.ChatRequest
+			Stream bool `json:"stream"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		requests <- req
+		if !req.Stream {
+			t.Error("model request must use streaming")
+		}
+		requests <- req.ChatRequest
 		index := int(count.Add(1)) - 1
 		if index >= len(replies) {
 			t.Errorf("unexpected model request %d", index+1)
 			http.Error(w, "unexpected request", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		finishReason := "stop"
 		if len(replies[index].ToolCalls) > 0 {
 			finishReason = "tool_calls"
 		}
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: replies[index], FinishReason: finishReason}}})
+		writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: replies[index], FinishReason: finishReason}}})
 	}))
 	t.Cleanup(srv.Close)
 	return srv, requests

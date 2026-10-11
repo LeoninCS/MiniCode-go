@@ -4,7 +4,6 @@ package cli_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -22,11 +21,12 @@ import (
 func TestMiniCode_TerminalCtrlC(t *testing.T) {
 	binary := buildMiniCode(t)
 	for _, tc := range []struct {
-		name     string
-		keys     string
-		running  bool
-		initial  bool
-		approval bool
+		name      string
+		keys      string
+		running   bool
+		initial   bool
+		approval  bool
+		streaming bool
 	}{
 		{name: "empty input legacy", keys: "\x03"},
 		{name: "empty input kitty", keys: "\x1b[99;5u"},
@@ -34,6 +34,7 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 		{name: "multiline input xterm", keys: "draft\ntext\x1b[27;5;99~"},
 		{name: "waiting for model", running: true},
 		{name: "initial model request", running: true, initial: true},
+		{name: "streaming preview", running: true, initial: true, streaming: true},
 		{name: "waiting for approval", initial: true, approval: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -46,8 +47,13 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 					call := provider.ToolCall{ID: "approval", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"true"}`}}
 					message := provider.NewMessage(provider.RoleAssistant, "需要执行命令。", "")
 					message.ToolCalls = []provider.ToolCall{call}
-					_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message, FinishReason: "tool_calls"}}})
+					writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: message, FinishReason: "tool_calls"}}})
 					return
+				}
+				if tc.streaming {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial-preview\"}}]}\n\n")
+					w.(http.Flusher).Flush()
 				}
 				<-r.Context().Done()
 				close(canceled)
@@ -145,6 +151,9 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 				case <-started:
 				case <-time.After(3 * time.Second):
 					t.Fatal("model request did not start")
+				}
+				if tc.streaming {
+					waitForOutput("partial-preview")
 				}
 				send("\x03") // 普通键盘模式下，由内核生成 SIGINT。
 			default:

@@ -3,7 +3,6 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,8 +33,7 @@ func TestSessionPersistence_RestoresHistory(t *testing.T) {
 		}
 		requests <- request
 		index := int(count.Add(1)) - 1
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: replies[index]}}})
+		writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: replies[index]}}})
 	}))
 	defer srv.Close()
 
@@ -210,8 +208,7 @@ func TestSessionPersistence_SaveFailureIsReported(t *testing.T) {
 	workspace := t.TempDir()
 	t.Chdir(workspace)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"}}]}`)
+		writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "done", "")}}})
 	}))
 	defer srv.Close()
 	client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "key", Model: "model"})

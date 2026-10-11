@@ -301,10 +301,10 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 		turnNumber := turn + 1
 		stats.ModelCalls++
 		output.ModelStart(turnNumber)
-		resp, err := s.client.Chat(ctx, provider.ChatRequest{
+		resp, err := s.chat(ctx, provider.ChatRequest{
 			Messages: s.messages,
 			Tools:    toolDefinitions,
-		})
+		}, output)
 		if err != nil {
 			return err
 		}
@@ -385,7 +385,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 		}
 	}
 	stats.ModelCalls++
-	content, summaryResp, err := summarizeAtTurnLimit(ctx, s.client, s.messages)
+	content, summaryResp, err := s.summarizeAtTurnLimit(ctx, output)
 	if summaryResp != nil {
 		addUsage(summaryResp)
 	}
@@ -403,9 +403,9 @@ func (s *Session) Close() error {
 }
 
 // summarizeAtTurnLimit 在完整工具结果之后请求一次总结,不再提供或执行工具。
-func summarizeAtTurnLimit(ctx context.Context, client provider.Provider, messages []provider.Message) (string, *provider.ChatResponse, error) {
-	messages = append(messages, provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, ""))
-	resp, err := client.Chat(ctx, provider.ChatRequest{Messages: messages})
+func (s *Session) summarizeAtTurnLimit(ctx context.Context, output Output) (string, *provider.ChatResponse, error) {
+	messages := append(s.messages, provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, ""))
+	resp, err := s.chat(ctx, provider.ChatRequest{Messages: messages}, output)
 	if err != nil {
 		return "", nil, err
 	}

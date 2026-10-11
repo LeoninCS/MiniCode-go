@@ -36,8 +36,7 @@ func TestMiniCode_Config(t *testing.T) {
 			if req.MaxTokens != 0 {
 				t.Errorf("unexpected max tokens limit: %d", req.MaxTokens)
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"loaded"},"finish_reason":"stop"}]}`)
+			writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "loaded", ""), FinishReason: "stop"}}})
 		case "/api/public/otel/v1/traces":
 			traceCalls.Add(1)
 			public, secret, ok := r.BasicAuth()
@@ -110,6 +109,7 @@ func TestMiniCode_ConfigErrors(t *testing.T) {
 		{name: "no base url flag", content: valid, args: []string{"-base-url", "override"}, wantCode: 2, wantError: "flag provided but not defined"},
 		{name: "no model flag", content: valid, args: []string{"-model", "override"}, wantCode: 2, wantError: "flag provided but not defined"},
 		{name: "no config path flag", content: valid, args: []string{"-config", "other.toml"}, wantCode: 2, wantError: "flag provided but not defined"},
+		{name: "no streaming flag", content: valid, args: []string{"--stream=false"}, wantCode: 2, wantError: "flag provided but not defined: -stream"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command(binary, tc.args...)

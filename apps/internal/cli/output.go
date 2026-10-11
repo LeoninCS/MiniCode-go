@@ -15,9 +15,10 @@ import (
 
 // Output 将 Agent 的最终回复、任务错误和审批请求展示到 CLI。
 type Output struct {
-	stdout      io.Writer
-	stderr      io.Writer
-	interactive bool
+	stdout       io.Writer
+	stderr       io.Writer
+	interactive  bool
+	streamActive bool
 }
 
 // NewOutput 创建 CLI 输出适配器。实时过程只展示在交互终端，避免污染管道输出。
@@ -31,6 +32,26 @@ func (o *Output) ModelStart(turn int) {
 		return
 	}
 	_, _ = fmt.Fprintf(o.stdout, "[turn %d] waiting for model\n", turn)
+}
+
+// StreamEvent 在交互终端的备用屏幕展示文本增量，管道只输出最终回复。
+func (o *Output) StreamEvent(event provider.StreamEvent) {
+	if !o.interactive || event.Content == "" {
+		return
+	}
+	if !o.streamActive {
+		_, _ = io.WriteString(o.stdout, "\x1b[?1049h")
+		o.streamActive = true
+	}
+	_, _ = io.WriteString(o.stdout, event.Content)
+}
+
+// StreamDone 恢复主屏幕，成功、失败与取消都需要清除临时预览。
+func (o *Output) StreamDone() {
+	if o.streamActive {
+		_, _ = io.WriteString(o.stdout, "\x1b[?1049l")
+		o.streamActive = false
+	}
 }
 
 // ToolStart 展示即将执行的工具；参数和结果不在过程事件中输出。

@@ -143,7 +143,7 @@ func (c ToolCall) DecodeArguments(dst any) error {
 	return nil
 }
 
-// ChatResponse 是模型服务对一次非流式请求的完整回复。
+// ChatResponse 是一次请求的完整回复，也用于读取流式事件聚合后的结果。
 // 各 Provider 将服务回复转换为此结构，Agent 统一读取 Choices[0]。
 type ChatResponse struct {
 	ID      string   `json:"id"`
@@ -170,7 +170,7 @@ type Usage struct {
 //
 // content 为 null 的工具调用回复会返回空字符串;
 // 调用方应先通过 ToolCalls 判断是否存在工具调用。
-// 后续 Day 11 引入流式后,本方法仍可作为最终聚合结果的读取入口。
+// 流式回复聚合后也通过本方法读取最终文本。
 func (r *ChatResponse) Content() string {
 	if r == nil || len(r.Choices) == 0 {
 		return ""

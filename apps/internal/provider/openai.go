@@ -36,8 +36,6 @@ type Config struct {
 }
 
 // Client 是对 OpenAI 兼容 /chat/completions 端点的轻量封装。
-//
-// ChatStream 当前返回 ErrStreamingUnsupported，SSE 解析在后续实现。
 type Client struct {
 	cfg  Config
 	http *http.Client
@@ -69,40 +67,21 @@ func (c *Client) DefaultModel() string {
 	return c.cfg.Model
 }
 
-// ChatStream 预留统一流式入口；当前实现尚不发送 SSE 请求。
-func (c *Client) ChatStream(context.Context, ChatRequest) (Stream, error) {
-	return nil, ErrStreamingUnsupported
-}
-
 // Chat 发送一次非流式对话请求并解析响应。
 //
 // 调用方通过 req.Model == "" 指定使用默认模型;
 // 否则使用 req.Model 覆盖,便于 Day 10 起的多模型切换。
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	if c == nil {
-		return nil, errors.New("provider: nil client")
+	req, err := c.prepareRequest(req)
+	if err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(c.cfg.APIKey) == "" {
-		return nil, errors.New("provider: empty API key")
-	}
-	if len(req.Messages) == 0 {
-		return nil, errors.New("provider: empty messages")
-	}
-	model := req.Model
-	if model == "" {
-		model = c.cfg.Model
-	}
-	if strings.TrimSpace(model) == "" {
-		return nil, errors.New("provider: empty model")
-	}
-	req.Model = model
-
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("provider: marshal request: %w", err)
 	}
 
-	ctx, span := startGenerationSpan(ctx, c.cfg.Tracer, model, body)
+	ctx, span := startGenerationSpan(ctx, c.cfg.Tracer, req.Model, body)
 	defer span.End()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -155,6 +134,28 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		)
 	}
 	return &out, nil
+}
+
+// prepareRequest 共用流式与非流式调用的校验和默认模型选择。
+func (c *Client) prepareRequest(req ChatRequest) (ChatRequest, error) {
+	if c == nil {
+		return req, errors.New("provider: nil client")
+	}
+	if strings.TrimSpace(c.cfg.APIKey) == "" {
+		return req, errors.New("provider: empty API key")
+	}
+	if len(req.Messages) == 0 {
+		return req, errors.New("provider: empty messages")
+	}
+	model := req.Model
+	if model == "" {
+		model = c.cfg.Model
+	}
+	if strings.TrimSpace(model) == "" {
+		return req, errors.New("provider: empty model")
+	}
+	req.Model = model
+	return req, nil
 }
 
 func startGenerationSpan(ctx context.Context, tracer trace.Tracer, model string, request []byte) (context.Context, trace.Span) {

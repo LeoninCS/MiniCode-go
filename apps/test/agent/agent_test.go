@@ -44,8 +44,7 @@ func TestRun_OutputAndToolErrorRecovery(t *testing.T) {
 			return
 		}
 		requests <- req
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{
+		writeStreamResponse(w, provider.ChatResponse{
 			Choices: []provider.Choice{{Message: replies[index]}},
 			Usage: &provider.Usage{
 				PromptTokens: 10 * (index + 1), CompletionTokens: index + 1, TotalTokens: 11 * (index + 1),
@@ -134,10 +133,9 @@ func TestRun_TurnLimitSummaryFailure(t *testing.T) {
 			var count atomic.Int32
 			call := provider.ToolCall{ID: "again", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":":"}`}}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
 				if count.Add(1) <= 500 {
 					message := provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}
-					_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
+					writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
 					return
 				}
 				if cancelSummary {
@@ -148,6 +146,7 @@ func TestRun_TurnLimitSummaryFailure(t *testing.T) {
 					}
 					return
 				}
+				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
 				_, _ = io.WriteString(w, `{"error":{"code":"summary_unavailable","message":"try later"}}`)
 			}))
@@ -189,8 +188,7 @@ func TestRun_SystemPromptDeclaresWorkspaceAndToolRules(t *testing.T) {
 			return
 		}
 		requests <- req
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "done", "")}}})
+		writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "done", "")}}})
 	}))
 	defer srv.Close()
 
@@ -244,8 +242,7 @@ func TestSession_TurnsShareHistory(t *testing.T) {
 		}
 		index := int(count.Add(1)) - 1
 		requests <- req
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: replies[index]}}})
+		writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: replies[index]}}})
 	}))
 	defer srv.Close()
 
@@ -304,7 +301,7 @@ func TestSession_ToolApproval(t *testing.T) {
 					message = provider.NewMessage(provider.RoleAssistant, approvalContent, "")
 					message.ToolCalls = []provider.ToolCall{call}
 				}
-				_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
+				writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
 			}))
 			defer srv.Close()
 
@@ -349,7 +346,7 @@ func TestSession_ReadDoesNotRequireApproval(t *testing.T) {
 		if count.Add(1) == 1 {
 			message = provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}
 		}
-		_ = json.NewEncoder(w).Encode(provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
+		writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: message}}})
 	}))
 	defer srv.Close()
 	approver := agent.ToolApproverFunc(func(context.Context, string, provider.ToolCall) (bool, error) {

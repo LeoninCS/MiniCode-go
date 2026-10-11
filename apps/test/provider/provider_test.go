@@ -3,7 +3,7 @@ package provider_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,10 +74,10 @@ func TestNew_RejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
-func TestClient_ChatStreamReportsUnsupportedWithoutRequest(t *testing.T) {
+func TestNew_ProvidesOpenAIStreaming(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("unsupported streaming must not send a model request")
-		http.Error(w, "unexpected request", http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 	model, err := provider.New(provider.Config{BaseURL: srv.URL, APIKey: "key", Model: "model"})
@@ -91,7 +91,11 @@ func TestClient_ChatStreamReportsUnsupportedWithoutRequest(t *testing.T) {
 	stream, err := streaming.ChatStream(context.Background(), provider.ChatRequest{
 		Messages: []provider.Message{provider.NewMessage(provider.RoleUser, "hi", "")},
 	})
-	if stream != nil || !errors.Is(err, provider.ErrStreamingUnsupported) {
-		t.Fatalf("stream = %v, error = %v", stream, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Recv(); err != io.EOF {
+		t.Fatalf("Recv error = %v, want io.EOF", err)
 	}
 }

@@ -37,3 +37,10 @@ type Output interface {
 	TaskDone(stats TaskStats)
 	ToolError(err error)
 }
+
+// StreamOutput 是可选的实时预览能力。事件可能包含模型中间文本或工具参数片段，
+// 展示方应在 StreamDone 后清除预览，再由 Output 展示校验后的最终回复或工具状态。
+type StreamOutput interface {
+	StreamEvent(provider.StreamEvent)
+	StreamDone()
+}
