@@ -11,6 +11,7 @@ import (
 
 	"github.com/MiniCode-go/minicode/internal/agent"
 	"github.com/MiniCode-go/minicode/internal/provider"
+	sessionstore "github.com/MiniCode-go/minicode/internal/session"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -190,5 +191,114 @@ func TestNewSession_RejectsNilProvider(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "nil provider") {
 			t.Fatalf("error = %v, want nil provider", err)
 		}
+	}
+}
+
+func TestSession_TruncatedTextIsSavedForContinuationWithoutRetry(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%t", streaming), func(t *testing.T) {
+			workspace := t.TempDir()
+			t.Chdir(workspace)
+			calls := 0
+			chat := func(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+				calls++
+				if req.MaxTokens != 8192 {
+					t.Fatalf("output cap changed: %d", req.MaxTokens)
+				}
+				content, finish := "未完成的文本", "length"
+				if calls == 2 {
+					if len(req.Messages) != 4 || req.Messages[2].Text() != content || req.Messages[3].Text() != "继续" {
+						t.Fatalf("continuation history = %+v", req.Messages)
+					}
+					content, finish = "剩余部分", "stop"
+				} else if calls != 1 {
+					t.Fatalf("unexpected call %d", calls)
+				}
+				return &provider.ChatResponse{
+					Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, content, ""), FinishReason: finish}},
+					Usage:   &provider.Usage{PromptTokens: 10, CompletionTokens: 1, TotalTokens: 11},
+				}, nil
+			}
+			var model provider.Provider = &fakeProvider{chat: chat}
+			if streaming {
+				model = &fakeStreamingProvider{stream: func(ctx context.Context, req provider.ChatRequest) (provider.Stream, error) {
+					resp, err := chat(ctx, req)
+					if err != nil {
+						return nil, err
+					}
+					return &fakeStream{events: []provider.StreamEvent{{Content: resp.Content(), FinishReason: resp.Choices[0].FinishReason, Usage: resp.Usage}}}, nil
+				}}
+			}
+			session, err := agent.OpenSessionByID(model, nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = session.Close() })
+			output := &recordingStreamOutput{}
+			if err := session.Turn(context.Background(), "生成长文本", output); err == nil || !strings.Contains(err.Error(), "truncated by length limit") || calls != 1 {
+				t.Fatalf("error=%v, calls=%d", err, calls)
+			}
+			if !reflect.DeepEqual(output.events, []string{"message:未完成的文本"}) || output.processEvents[len(output.processEvents)-1] != "stats:1:0:11" {
+				t.Fatalf("output=%+v", output)
+			}
+			path, err := sessionstore.Path(workspace, session.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := sessionstore.Load(path)
+			if err != nil || snapshot.LastTurnStatus != "failed" || len(snapshot.Messages) != 2 || snapshot.Messages[1].Text() != "未完成的文本" {
+				t.Fatalf("snapshot=%+v, error=%v", snapshot, err)
+			}
+			if err := session.Turn(context.Background(), "继续", output); err != nil || calls != 2 {
+				t.Fatalf("continue: error=%v, calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+func TestSession_TurnLimitSummaryRecoveryAndTruncation(t *testing.T) {
+	for _, truncated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("truncated=%t", truncated), func(t *testing.T) {
+			calls := 0
+			model := &fakeProvider{chat: func(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+				calls++
+				if calls <= 500 {
+					message := provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+						ID: "again", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "unknown", Arguments: `{}`},
+					}}}
+					return &provider.ChatResponse{Choices: []provider.Choice{{Message: message}}}, nil
+				}
+				if calls > 502 || req.MaxTokens != 8192 || len(req.Tools) != 0 || len(req.Messages) != 1003 {
+					t.Fatalf("summary request: calls=%d, request=%+v", calls, req)
+				}
+				if last := req.Messages[len(req.Messages)-1]; last.Role != provider.RoleSystem || !strings.Contains(last.Text(), "停止调用工具") {
+					t.Fatalf("lost summary instruction: %+v", last)
+				}
+				finish := "stop"
+				if truncated {
+					finish = "length"
+				} else if calls == 501 {
+					return nil, &provider.APIError{StatusCode: 400, Code: "context_length_exceeded"}
+				}
+				return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "总结文本", ""), FinishReason: finish}}}, nil
+			}}
+			output := &recordingOutput{}
+			err := newSession(t, model).Turn(context.Background(), "反复执行", output)
+			if err == nil || !strings.Contains(err.Error(), "maximum model turns") || len(output.events) != 2 {
+				t.Fatalf("error=%v, output=%q", err, output.events)
+			}
+			wantCalls := 502
+			if truncated {
+				wantCalls = 501
+				if !strings.Contains(err.Error(), "truncated by length limit") || output.events[0] != "message:总结文本" || !strings.Contains(output.events[1], "未能生成最终总结") {
+					t.Fatalf("truncated summary: error=%v, output=%q", err, output.events)
+				}
+			} else if !strings.Contains(output.events[0], "重试当前模型请求一次") || output.events[1] != "message:总结文本" {
+				t.Fatalf("recovered summary: %q", output.events)
+			}
+			if calls != wantCalls || output.processEvents[len(output.processEvents)-1] != fmt.Sprintf("stats:%d:500:0", wantCalls) {
+				t.Fatalf("calls=%d, stats=%s", calls, output.processEvents[len(output.processEvents)-1])
+			}
+		})
 	}
 }

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/MiniCode-go/minicode/internal/provider"
@@ -240,6 +242,71 @@ func TestSession_StreamsTurnLimitSummaryWithoutTools(t *testing.T) {
 	}
 	if output.done != 501 || !reflect.DeepEqual(output.events, []string{"message:停止执行"}) {
 		t.Fatalf("output = %+v", output)
+	}
+}
+
+func TestSession_ContextOverflowRecoveryFromHTTPAndStream(t *testing.T) {
+	for _, inStream := range []bool{false, true} {
+		name := "HTTP error"
+		if inStream {
+			name = "SSE error after partial tool call"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req provider.ChatRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Errorf("decode request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if req.MaxTokens != 8192 || len(req.Messages) != 2 || req.Messages[1].Text() != "开始" {
+					t.Errorf("partial attempt leaked into retry: %+v", req)
+				}
+				count := calls.Add(1)
+				if count == 1 {
+					if inStream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: ")
+						_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{
+							"index": 0, "delta": map[string]any{"content": "partial", "tool_calls": []any{map[string]any{
+								"index": 0, "id": "write", "type": "function", "function": provider.FunctionCall{Name: "write", Arguments: `{"path":"never.txt","content":"x"}`},
+							}}},
+						}}})
+						_, _ = io.WriteString(w, "\ndata: {\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"context too large\"}}\n\n")
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = io.WriteString(w, `{"error":{"code":"context_length_exceeded","message":"context too large"}}`)
+					}
+					return
+				}
+				if count != 2 {
+					t.Errorf("unexpected request %d", count)
+				}
+				writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "成功", "")}}})
+			}))
+			defer srv.Close()
+			client := provider.NewClient(provider.Config{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"})
+			output := &recordingStreamOutput{}
+			if err := newSession(t, client).Turn(context.Background(), "开始", output); err != nil {
+				t.Fatal(err)
+			}
+			if calls.Load() != 2 || len(output.events) != 2 || output.events[1] != "message:成功" {
+				t.Fatalf("calls=%d, output=%q", calls.Load(), output.events)
+			}
+			wantDone := 1
+			if inStream {
+				wantDone = 2
+			}
+			if output.done != wantDone {
+				t.Fatalf("stream cleanup: done=%d, want %d", output.done, wantDone)
+			}
+			if _, err := os.Stat("never.txt"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("partial tool call executed: %v", err)
+			}
+		})
 	}
 }
 

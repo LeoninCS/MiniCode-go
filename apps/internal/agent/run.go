@@ -314,7 +314,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 		req.Messages = s.messages
 		stats.ModelCalls++
 		output.ModelStart(turnNumber)
-		resp, err := s.chat(ctx, req, output)
+		resp, err := s.chatWithContextRecovery(ctx, req, output, &stats)
 		if err != nil {
 			return err
 		}
@@ -325,6 +325,9 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 		}
 		content := resp.Content()
 		if content == "" && len(toolCalls) == 0 {
+			if resp != nil && len(resp.Choices) > 0 && resp.Choices[0].FinishReason == "length" {
+				return truncatedOutputError()
+			}
 			return errors.New("empty response from model")
 		}
 		// 带工具调用的文本属于模型的中间过程，不展示；只有不再调用工具时才输出最终回复。
@@ -335,6 +338,9 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 		// assistant 消息无论是否带工具调用都要进历史,否则下一轮模型看不到自己刚说过什么。
 		s.messages = append(s.messages, resp.Choices[0].Message)
 		if len(toolCalls) == 0 {
+			if resp.Choices[0].FinishReason == "length" {
+				return truncatedOutputError()
+			}
 			return nil
 		}
 		assistant := len(s.messages) - 1
@@ -395,11 +401,14 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 		}
 	}
 	stats.ModelCalls++
-	content, summaryResp, err := s.summarizeAtTurnLimit(ctx, output)
+	content, summaryResp, err := s.summarizeAtTurnLimit(ctx, output, &stats)
 	if summaryResp != nil {
 		addUsage(summaryResp)
 	}
 	if err != nil {
+		if content != "" {
+			output.Message(content)
+		}
 		output.Message(fmt.Sprintf("已达到最大执行轮数（%d），本次任务已停止，未能生成最终总结。请根据最终工作区状态确认已完成的工作。", maxTurns))
 		return fmt.Errorf("reached maximum model turns (%d); summarize: %w", maxTurns, err)
 	}
@@ -413,12 +422,12 @@ func (s *Session) Close() error {
 }
 
 // summarizeAtTurnLimit 在完整工具结果之后请求一次总结,不再提供或执行工具。
-func (s *Session) summarizeAtTurnLimit(ctx context.Context, output Output) (string, *provider.ChatResponse, error) {
+func (s *Session) summarizeAtTurnLimit(ctx context.Context, output Output, stats *TaskStats) (string, *provider.ChatResponse, error) {
 	instruction := provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, "")
 	req := provider.ChatRequest{Messages: append(s.messages, instruction)}
 	s.compactIfNeeded(req, output)
 	req.Messages = append(s.messages, instruction)
-	resp, err := s.chat(ctx, req, output)
+	resp, err := s.chatWithContextRecovery(ctx, req, output, stats)
 	if err != nil {
 		return "", nil, err
 	}
@@ -430,8 +439,16 @@ func (s *Session) summarizeAtTurnLimit(ctx context.Context, output Output) (stri
 		return "", resp, errors.New("summary response requested tools")
 	}
 	content := resp.Content()
+	if resp != nil && len(resp.Choices) > 0 && resp.Choices[0].FinishReason == "length" {
+		return content, resp, truncatedOutputError()
+	}
 	if strings.TrimSpace(content) == "" {
 		return "", resp, errors.New("empty summary response from model")
 	}
 	return content, resp, nil
+}
+
+// truncatedOutputError 区分输出截断与上下文超限，不为输出限制自动压缩或扩大上限。
+func truncatedOutputError() error {
+	return fmt.Errorf("model response truncated by length limit (max_tokens=%d); continue in smaller parts", maxOutputTokens)
 }

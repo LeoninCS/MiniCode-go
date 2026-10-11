@@ -211,6 +211,30 @@ type APIError struct {
 	Param      string `json:"param,omitempty"`
 }
 
+// IsContextOverflow 只识别明确的上下文窗口超限错误。
+// 普通参数错误、输出长度限制、限流和服务错误不触发压缩恢复。
+func IsContextOverflow(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr == nil {
+		return false
+	}
+	if apiErr.StatusCode != 0 && apiErr.StatusCode != 400 && apiErr.StatusCode != 413 {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(apiErr.Code))
+	if strings.Contains(code, "rate_limit") || strings.EqualFold(apiErr.Type, "rate_limit_error") {
+		return false
+	}
+	if code == "context_length_exceeded" || code == "model_context_window_exceeded" {
+		return true
+	}
+	message := strings.ToLower(apiErr.Message)
+	return strings.Contains(message, "exceeds the context window") ||
+		strings.Contains(message, "context window exceeds limit") ||
+		(strings.Contains(message, "maximum context length") &&
+			strings.Contains(message, "requested") && strings.Contains(message, "messages"))
+}
+
 // Error 实现 error 接口,便于上层用 errors.Is/As 区分错误来源。
 func (e *APIError) Error() string {
 	if e == nil {
