@@ -162,11 +162,18 @@ minicode
 - ✅ Day 9：新会话默认按 UUID 自动保存，并支持通过 `--session <id>` 跨进程恢复；
 - ✅ Day 10：Provider 接口、配置工厂、统一响应与错误，以及 Fake Provider 测试；
 - ✅ Day 11：SSE 请求与事件解析、终端增量预览、用量事件、错误与中断处理；
-- 🔄 Day 12：tool_calls 参数分片累积与校验已在 Day 11 接入，流式 Markdown 渲染待实现；
+- ✅ Day 12：tool_calls 参数分片累积与校验、终端流式 Markdown 渲染、合并刷新、长文本视口与窗口尺寸变化处理；
 - ⬜ Day 13：上下文压缩触发与摘要；
 - ⬜ Day 14：压缩切分点合法性处理。
 
 ## 最近更新
+
+### 2026-10-12
+
+- 补齐 Day 12 实现记录：模型生成过程中在备用屏幕渲染 Markdown，后续文本按 50 毫秒间隔合并刷新；
+- 支持跨分片和未闭合的 Markdown 格式，长回复预览跟随末尾，窗口尺寸变化时自动重排；
+- 复用 Markdown 主题与渲染器，渲染失败时回退到原文预览；结束、错误、超时和取消时停止刷新，恢复光标和主屏幕；
+- 补充实时渲染、合并刷新、跨轮清理、失败回退、并发关闭及 PTY 显示与尺寸变化测试；全量测试、CLI race 检查、`go vet` 和编译已通过。
 
 ### 2026-10-11
 
@@ -174,7 +181,7 @@ minicode
 - 终端在备用屏幕逐段预览模型文本，流结束后恢复主屏幕并渲染完整 Markdown；管道和文件输出保留完整回复，不写入增量预览；
 - 按工具索引累积名称与参数，完整结束并校验通过后才执行工具；提前断线不写入半截 assistant 消息，也不执行该次回复中的工具；
 - 读取到 `[DONE]` 后结束，保留文本结束后的独立 `usage` 事件；流式调用继续接入任务统计和 Langfuse 追踪；
-- 补充 SSE 分隔、长事件、工具分片、错误、断线、超时、取消、会话保存和 PTY 终端恢复测试；Day 12 剩余流式 Markdown 渲染。
+- 补充 SSE 分隔、长事件、工具分片、错误、断线、超时、取消、会话保存和 PTY 终端恢复测试。
 
 ### 2026-10-10
 
@@ -258,6 +265,7 @@ MiniCode-go/
     │   ├── input_display.go          # 折行、光标定位与滚动显示
     │   ├── approval.go               # 副作用工具审批与自动批准
     │   ├── output.go                 # 流式预览、运行状态与最终回答展示
+    │   ├── stream_preview.go         # Markdown 实时预览、合并刷新与视口
     │   └── markdown.go               # 终端检测与 Markdown 渲染
     ├── internal/agent/                 # Agent Loop、模型调用与工具执行
     │   ├── run.go                      # Session、交互循环与持久化接入
@@ -285,6 +293,8 @@ MiniCode-go/
     │   └── langfuse.go
     └── test/                           # 测试文件单独目录(black-box)
         ├── cli/                       # CLI、输入、终端显示与退出测试
+        │   ├── stream_preview_test.go  # 实时渲染、合并刷新、回退与关闭
+        │   └── stream_preview_terminal_test.go # PTY 中的排版、视口与尺寸变化
         ├── agent/                     # Agent、Fake Provider 与持久化测试
         │   ├── agent_test.go
         │   ├── run_test.go
@@ -351,7 +361,9 @@ minicode --session 550e8400-e29b-41d4-a716-446655440000
 
 终端中的完整模型回复使用 [Glamour](https://github.com/charmbracelet/glamour) 渲染 Markdown，支持标题、加粗、列表和代码高亮，并按终端宽度换行。默认使用 `dracula` 主题，可通过 `GLAMOUR_STYLE` 覆盖，例如浅色终端可设置 `GLAMOUR_STYLE=light`。输出到管道或文件时保留 Markdown 原文；渲染失败时也会回退到原文。工具审批信息按原文展示，工具结果回传模型并保存在会话历史中。
 
-流式接收自动启用。当标准输入和标准输出都连接终端时，模型文本增量按收到的事件在备用屏幕中即时预览；每次模型流结束、报错、超时或取消时恢复主屏幕。完整最终回答随后在主屏幕渲染 Markdown，工具状态和审批信息也在主屏幕展示。当前按服务端分片展示原文，边生成边渲染 Markdown 仍在 Day 12 计划中。
+流式接收和实时 Markdown 渲染自动启用。当标准输入和标准输出都连接终端时，CLI 累积模型文本，在备用屏幕渲染标题、列表、加粗和代码块，并按 50 毫秒间隔合并后续更新。尚未闭合的 Markdown 格式会随新文本重新排版；渲染失败时回退到原文预览。
+
+长回复预览只显示末尾可见行，自动跟随最新内容；窗口尺寸变化时会重新排版。每次模型流结束、报错、超时或取消时，CLI 停止刷新并恢复光标和主屏幕。完整最终回答随后在主屏幕渲染 Markdown，工具状态和审批信息也在主屏幕展示。
 
 工具调用的名称和 JSON 参数按索引累积，只有整条响应正常结束且所有调用校验通过后，才进入审批和执行。提前断线会报告任务失败，该次未完成的 assistant 回复和工具调用不会写入历史；此前已完成的步骤仍保留。
 
@@ -386,6 +398,9 @@ go -C apps run ./cmd/minicode
 
 # 只运行测试目录，避免显示源码包的 [no test files]
 go -C apps test -count=1 ./test/...
+
+# 检查实时预览、并发关闭及终端 Ctrl+C 恢复
+go -C apps test -race ./test/cli -run 'TestOutput|TestMiniCode_TerminalCtrlC' -count=1
 ```
 
-执行前审批、会话持久化和 SSE 流式输出已经接入；流式 Markdown 渲染和上下文压缩仍在后续计划中。工具实现与注册机制见 `apps/internal/tools/`。
+执行前审批、会话持久化、SSE 流式输出和实时 Markdown 渲染已经接入；下一阶段为 Day 13～14 的上下文压缩。工具实现与注册机制见 `apps/internal/tools/`。

@@ -196,7 +196,7 @@ Ctrl+C 在输入阶段退出且不提交草稿，在运行阶段取消底层操�
 
 Agent 维护多轮消息历史，并负责工具审批、执行及记录工具结果。模型适配层负责模型服务通信和协议转换。
 
-**当前实现（Day 11）**：Agent 依赖 `Provider` 抽象，自动使用可选的 `StreamingProvider.ChatStream` 能力，CLI 通过 `provider.New` 按配置创建实现。公共数据包括 `ChatRequest`、`ChatResponse`、消息、工具调用、流式事件与可选用量；服务 HTTP / SSE 业务错误统一为 `APIError`，网络和取消错误保留原有错误链。
+**当前实现（Day 12）**：Agent 依赖 `Provider` 抽象，自动使用可选的 `StreamingProvider.ChatStream` 能力，CLI 通过 `provider.New` 按配置创建实现。公共数据包括 `ChatRequest`、`ChatResponse`、消息、工具调用、流式事件与可选用量；服务 HTTP / SSE 业务错误统一为 `APIError`，网络和取消错误保留原有错误链。
 
 目前实际适配器仅支持 OpenAI 兼容 Chat Completions 协议。`model.provider` 可省略或留空，默认为 `"openai"`；当前可显式指定的协议名也只有 `"openai"`。兼容服务可以通过地址、密钥和模型名切换；新增专用协议需实现 `Provider` 并接入配置工厂，Agent Loop 和工具系统无需随之修改。
 
@@ -206,7 +206,9 @@ Agent 按工具索引累积名称与 JSON 参数，流正常结束并校验全�
 
 流式调用无需用户配置，也不提供 CLI 或 Session 开关。Provider 未实现流式能力或明确返回 `ErrStreamingUnsupported` 时，Agent 使用 `Chat`；其他 API、网络和解析错误直接返回，不自动重发非流式请求。Fake Provider 仍可只实现 `Chat`，测试不依赖真实模型服务。
 
-标准输入和标准输出都连接终端时，CLI 在备用屏幕即时预览文本增量；每次流结束或失败时恢复主屏幕，完整最终回答随后渲染 Markdown。非交互模式不输出增量预览和过程状态，完整回答写入 stdout，会话标识、统计和错误写入 stderr；副作用工具的审批说明和参数仍按现有规则展示。当前按服务端分片展示原文，生成过程中的 Markdown 渲染仍属于 Day 12 待办。
+标准输入和标准输出都连接终端时，CLI 在备用屏幕累计文本并实时渲染 Markdown，按 50 毫秒间隔合并后续更新。跨分片或未闭合的 Markdown 格式随新文本重新排版；渲染失败时回退原文。长文本预览保留末尾可见行，窗口尺寸变化时自动重排。每次流结束、错误、超时或取消时停止预览，恢复光标和主屏幕，完整最终回答随后渲染 Markdown。
+
+非交互模式不输出增量预览和过程状态，完整回答保留 Markdown 原文并写入 stdout，会话标识、统计和错误写入 stderr；副作用工具的审批说明和参数仍按现有规则展示。
 
 ### 4.5 Agent Loop
 
