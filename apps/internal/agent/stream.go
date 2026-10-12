@@ -13,6 +13,12 @@ import (
 // chat 设置固定输出上限并自动使用 Provider 的流式能力；完整结束前只交付预览事件，
 // 不向历史写入或执行任何工具。
 func (s *Session) chat(ctx context.Context, req provider.ChatRequest, output Output) (resp *provider.ChatResponse, err error) {
+	if len(req.Messages) == 0 {
+		return nil, errors.New("agent: empty messages")
+	}
+	if err := provider.ValidateMessages(req.Messages); err != nil {
+		return nil, fmt.Errorf("agent: invalid model context: %w", err)
+	}
 	req.MaxTokens = maxOutputTokens
 	defer func() {
 		if err == nil {

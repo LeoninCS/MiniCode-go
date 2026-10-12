@@ -60,6 +60,41 @@ func (o *recordingStreamOutput) StreamEvent(event provider.StreamEvent) {
 }
 func (o *recordingStreamOutput) StreamDone() { o.done++ }
 
+func TestSession_InvalidContextStopsBeforeCallingAnyProvider(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		name := "Chat"
+		if streaming {
+			name = "ChatStream"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			chatCalls, streamCalls, wantStreamCalls := 0, 0, 0
+			model := fakeProvider{chat: func(context.Context, provider.ChatRequest) (*provider.ChatResponse, error) {
+				chatCalls++
+				// 自定义 Provider 可返回不合法的消息字段，下一轮必须在本地拦截。
+				return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "done", "unexpected-id")}}}, nil
+			}}
+			var client provider.Provider = &model
+			if streaming {
+				wantStreamCalls = 1
+				client = &fakeStreamingProvider{fakeProvider: model, stream: func(context.Context, provider.ChatRequest) (provider.Stream, error) {
+					streamCalls++
+					return nil, provider.ErrStreamingUnsupported
+				}}
+			}
+			session := newSession(t, client)
+			output := &recordingStreamOutput{}
+			if err := session.Turn(context.Background(), "start", output); err != nil {
+				t.Fatal(err)
+			}
+			err := session.Turn(context.Background(), strings.Repeat("r", 1000000), output)
+			if err == nil || !strings.Contains(err.Error(), "invalid assistant message") || chatCalls != 1 || streamCalls != wantStreamCalls || len(output.deltas) != 0 || output.done != 0 {
+				t.Fatalf("error=%v chat calls=%d stream calls=%d output=%+v", err, chatCalls, streamCalls, output)
+			}
+		})
+	}
+}
+
 func TestSession_StreamsTextAndAccumulatesInterleavedToolsBeforeExecution(t *testing.T) {
 	t.Chdir(t.TempDir())
 	first := &fakeStream{events: []provider.StreamEvent{

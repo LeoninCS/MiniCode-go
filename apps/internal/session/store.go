@@ -133,52 +133,12 @@ func Path(workspace, id string) (string, error) {
 }
 
 func validateMessages(messages []provider.Message) error {
-	pending := map[string]struct{}{}
 	for index, message := range messages {
-		if len(pending) > 0 {
-			if message.Role != provider.RoleTool {
-				return fmt.Errorf("message %d: assistant tool calls are missing results", index)
-			}
-			if _, ok := pending[message.ToolCallID]; !ok {
-				return fmt.Errorf("message %d: unexpected or duplicate tool result ID %q", index, message.ToolCallID)
-			}
-			if len(message.ToolCalls) != 0 || message.Content == nil {
-				return fmt.Errorf("message %d: invalid tool result", index)
-			}
-			delete(pending, message.ToolCallID)
-			continue
-		}
-
-		switch message.Role {
-		case provider.RoleUser:
-			if message.Content == nil || len(message.ToolCalls) != 0 || message.ToolCallID != "" {
-				return fmt.Errorf("message %d: invalid user message", index)
-			}
-		case provider.RoleAssistant:
-			if message.ToolCallID != "" || (message.Content == nil && len(message.ToolCalls) == 0) {
-				return fmt.Errorf("message %d: invalid assistant message", index)
-			}
-			for callIndex, call := range message.ToolCalls {
-				if err := call.Validate(); err != nil {
-					return fmt.Errorf("message %d tool call %d: %w", index, callIndex, err)
-				}
-				if _, exists := pending[call.ID]; exists {
-					return fmt.Errorf("message %d: duplicate tool call ID %q", index, call.ID)
-				}
-				pending[call.ID] = struct{}{}
-			}
-		case provider.RoleTool:
-			return fmt.Errorf("message %d: tool result has no preceding call", index)
-		case provider.RoleSystem:
+		if message.Role == provider.RoleSystem {
 			return fmt.Errorf("message %d: system messages are not stored in session files", index)
-		default:
-			return fmt.Errorf("message %d: unsupported role %q", index, message.Role)
 		}
 	}
-	if len(pending) > 0 {
-		return errors.New("final assistant tool calls are missing results")
-	}
-	return nil
+	return provider.ValidateMessages(messages)
 }
 
 // Save 校验快照，随后在目标目录写入并同步临时文件，再原子替换目标。

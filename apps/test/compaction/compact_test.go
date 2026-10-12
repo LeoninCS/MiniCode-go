@@ -210,3 +210,28 @@ func TestCompact_SkipsWhenThereIsNoOlderHistory(t *testing.T) {
 		}
 	}
 }
+
+func TestCompact_RejectsInvalidHistoryBeforeSummarizing(t *testing.T) {
+	call := provider.ToolCall{ID: "read", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "read", Arguments: `{"path":"file.go"}`}}
+	for _, tc := range []struct {
+		name     string
+		messages []provider.Message
+	}{
+		{"orphan result", []provider.Message{provider.NewMessage(provider.RoleTool, "contents", call.ID)}},
+		{"unfinished batch", []provider.Message{{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}}},
+		{"interrupted batch", []provider.Message{{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}, provider.NewMessage(provider.RoleUser, strings.Repeat("r", 80000), "")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := &compaction.State{Summary: "previous checkpoint"}
+			original := append([]provider.Message(nil), tc.messages...)
+			model := summaryProvider(func(context.Context, provider.ChatRequest) (*provider.ChatResponse, error) {
+				t.Fatal("invalid history reached summary provider")
+				return nil, nil
+			})
+			result, err := compaction.Compact(context.Background(), model, tc.messages, previous)
+			if err == nil || !strings.Contains(err.Error(), "invalid history") || result.Changed || result.State != previous || result.ModelCalls != 0 || !reflect.DeepEqual(tc.messages, original) {
+				t.Fatalf("invalid compact: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}

@@ -38,6 +38,9 @@ func Compact(ctx context.Context, client provider.Provider, history []provider.M
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	if err := provider.ValidateMessages(history); err != nil {
+		return result, fmt.Errorf("compaction: invalid history: %w", err)
+	}
 	if err := previous.Validate(history); err != nil {
 		return result, err
 	}
@@ -62,7 +65,14 @@ func Compact(ctx context.Context, client provider.Provider, history []provider.M
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	result.State = &State{Summary: summary, FirstKeptMessageIndex: cut}
+	candidate := &State{Summary: summary, FirstKeptMessageIndex: cut}
+	if err := candidate.Validate(history); err != nil {
+		return result, err
+	}
+	if err := provider.ValidateMessages(candidate.ContextMessages(history)); err != nil {
+		return result, fmt.Errorf("compaction: invalid compacted context: %w", err)
+	}
+	result.State = candidate
 	result.Changed = true
 	return result, nil
 }

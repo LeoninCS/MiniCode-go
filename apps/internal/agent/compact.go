@@ -39,11 +39,21 @@ func (s *Session) compact(ctx context.Context, stats *TaskStats) (bool, error) {
 }
 
 // contextMessages 临时构造模型上下文，完整原文继续留在 s.messages 和会话存档中。
-func (s *Session) contextMessages() []provider.Message {
+func (s *Session) contextMessages() ([]provider.Message, error) {
+	if len(s.messages) == 0 {
+		return nil, errors.New("agent: empty session history")
+	}
+	if err := s.compaction.Validate(s.messages[1:]); err != nil {
+		return nil, fmt.Errorf("agent: invalid compaction checkpoint: %w", err)
+	}
 	body := s.compaction.ContextMessages(s.messages[1:])
 	messages := make([]provider.Message, 0, 1+len(body))
 	messages = append(messages, s.messages[0])
-	return append(messages, body...)
+	messages = append(messages, body...)
+	if err := provider.ValidateMessages(messages); err != nil {
+		return nil, fmt.Errorf("agent: invalid model context: %w", err)
+	}
+	return messages, nil
 }
 
 // chatWithContextRecovery 对上下文超限触发压缩，并只重试当前模型请求一次。
@@ -57,11 +67,19 @@ func (s *Session) chatWithContextRecovery(ctx context.Context, req provider.Chat
 		return nil, ctx.Err()
 	}
 	// 总结请求带有额外系统指令；压缩历史后仍须保留，且不能写入会话历史。
-	extra := append([]provider.Message(nil), req.Messages[len(s.contextMessages()):]...)
+	current, contextErr := s.contextMessages()
+	if contextErr != nil {
+		return nil, contextErr
+	}
+	extra := append([]provider.Message(nil), req.Messages[len(current):]...)
 	if _, compactErr := s.compact(ctx, stats); compactErr != nil {
 		return nil, fmt.Errorf("context overflow recovery: %w", errors.Join(err, compactErr))
 	}
-	req.Messages = append(s.contextMessages(), extra...)
+	current, contextErr = s.contextMessages()
+	if contextErr != nil {
+		return nil, contextErr
+	}
+	req.Messages = append(current, extra...)
 	output.Message("模型提示上下文超限，已触发压缩，将重试当前模型请求一次。")
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

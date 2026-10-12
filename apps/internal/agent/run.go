@@ -335,11 +335,18 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
 		turnNumber := turn + 1
-		req := provider.ChatRequest{Messages: s.contextMessages(), Tools: toolDefinitions}
+		messages, err := s.contextMessages()
+		if err != nil {
+			return err
+		}
+		req := provider.ChatRequest{Messages: messages, Tools: toolDefinitions}
 		if err := s.compactIfNeeded(ctx, req, output, &stats); err != nil {
 			return err
 		}
-		req.Messages = s.contextMessages()
+		req.Messages, err = s.contextMessages()
+		if err != nil {
+			return err
+		}
 		stats.ModelCalls++
 		output.ModelStart(turnNumber)
 		resp, err := s.chatWithContextRecovery(ctx, req, output, &stats)
@@ -452,11 +459,19 @@ func (s *Session) Close() error {
 // summarizeAtTurnLimit 在完整工具结果之后请求一次总结,不再提供或执行工具。
 func (s *Session) summarizeAtTurnLimit(ctx context.Context, output Output, stats *TaskStats) (string, *provider.ChatResponse, error) {
 	instruction := provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, "")
-	req := provider.ChatRequest{Messages: append(s.contextMessages(), instruction)}
+	messages, err := s.contextMessages()
+	if err != nil {
+		return "", nil, err
+	}
+	req := provider.ChatRequest{Messages: append(messages, instruction)}
 	if err := s.compactIfNeeded(ctx, req, output, stats); err != nil {
 		return "", nil, err
 	}
-	req.Messages = append(s.contextMessages(), instruction)
+	messages, err = s.contextMessages()
+	if err != nil {
+		return "", nil, err
+	}
+	req.Messages = append(messages, instruction)
 	resp, err := s.chatWithContextRecovery(ctx, req, output, stats)
 	if err != nil {
 		return "", nil, err

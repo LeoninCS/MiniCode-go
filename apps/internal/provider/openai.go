@@ -147,6 +147,9 @@ func (c *Client) prepareRequest(req ChatRequest) (ChatRequest, error) {
 	if len(req.Messages) == 0 {
 		return req, errors.New("provider: empty messages")
 	}
+	if err := ValidateMessages(req.Messages); err != nil {
+		return req, err
+	}
 	model := req.Model
 	if model == "" {
 		model = c.cfg.Model
