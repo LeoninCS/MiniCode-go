@@ -31,7 +31,7 @@ apps/                                # Go module 根(不是仓库根)
 ├── internal/config/                 # 固定路径 TOML 配置读取与校验
 ├── internal/session/                # 会话快照校验、读取与原子保存
 ├── internal/compaction/             # 固定上下文预算、近期原文保留与 LLM 摘要
-│   └── trigger.go / compact.go / prompt.go
+│   └── trigger.go / compact.go / state.go / prompt.go
 ├── internal/tools/                  # 工具实现 + 注册机制
 │   ├── registry.go                  # Tool、ToolRegistry、参数公共校验
 │   ├── bash.go                      # RunBash + execute*Tool + build*Tool
@@ -40,13 +40,14 @@ apps/                                # Go module 根(不是仓库根)
 ├── internal/provider/               # Provider 抽象 + OpenAI 兼容客户端(纯源码,无 _test.go)
 │   ├── provider.go                  # 接口、流式契约与配置工厂
 │   ├── types.go                     # 公共消息、响应、工具调用与错误
+│   ├── messages.go                  # 公共消息序列与工具配对校验
 │   ├── openai.go                    # 非流式调用与共用请求校验
 │   └── openai_stream.go             # SSE 请求、解析、取消与关闭
 ├── internal/telemetry/              # OpenTelemetry / Langfuse 追踪配置
 └── test/                            # 测试单独目录,black-box
     ├── cli/                        # CLI、输入、终端显示与退出
     ├── agent/                      # Agent、流式聚合、错误回传与持久化
-    ├── compaction/                 # 预算阈值、完整摘要输入、分块与保留边界
+    ├── compaction/                 # 预算、分块、保留边界、连续压缩与语义验收
     ├── tools/                      # 工具行为与取消
     └── provider/                   # 模型协议、SSE、取消与追踪
 ```
@@ -133,7 +134,7 @@ apps/                                # Go module 根(不是仓库根)
 
 - **默认保存**：新会话生成标准小写 UUID，立即创建 `.minicode/sessions/<id>.json`，并在每轮结束后原子更新。
 - **恢复入口**：CLI 输出当前会话 ID；`--session <id>` 只恢复当前工作区中已经存在的存档，不接受文件路径或空 ID。仅运行这条命令即可进入普通输入循环，无需附加提示词。
-- **恢复边界**：存档保留用户、assistant 和 tool 协议消息及上一轮状态；系统 Prompt 按当前实现重新生成，不恢复进程、审批状态或文件读取缓存。
+- **恢复边界**：v2 存档保留完整用户、assistant 和 tool 协议消息、独立压缩检查点及上一轮状态；系统 Prompt 按当前实现重新生成，模型上下文按检查点选择摘要与近期原文，不恢复进程、审批状态或文件读取缓存。v1 读取时迁移；已被旧版丢弃的原文无法恢复。
 - **校验与权限**：校验 UUID、版本、工作区和工具调用配对；临时文件权限为 `0600`，`.minicode/` 不应提交到 Git。
 
 ### Day 10 Provider 抽象（2026-10-10）
@@ -164,20 +165,31 @@ apps/                                # Go module 根(不是仓库根)
 - **清理边界**：`StreamDone` 停止并等待预览协程退出，再恢复光标和主屏幕；重复或并发关闭只恢复一次。下一次调用创建独立预览，不能继续写入上一轮文本；CLI 退出时也执行清理。
 - **验证入口**：`apps/test/cli/stream_preview_test.go` 覆盖中间渲染、合并刷新、失败回退、跨轮清理和并发关闭；`stream_preview_terminal_test.go` 验证 PTY 中的未闭合格式、表格重排、长文本与尺寸变化；`run_terminal_test.go` 验证实际 CLI 的 Ctrl+C 恢复。
 
-### Day 13 上下文预算与 LLM 摘要（2026-10-12 同步）
+### Day 13 上下文预算与 LLM 摘要（2026-10-13 同步）
 
 - **固定预算**：`ContextWindow = 256 * 1024`、`ReservedTokens = 16 * 1024`、`KeepRecentTokens = 20000`；均为代码常量。剩余空间严格小于余量时触发，窗口大小尚未按实际模型自动识别。
 - **检查时机**：新输入已追加到历史后、每次主对话请求前检查，计入工具声明。工具批次全部完成后再检查下一次请求。最近一次主对话 usage 用于校准当前占用，不累加不同请求的用量作为上下文大小。
-- **职责**：`compaction.Compact(ctx, provider, messages)` 集中处理保留边界、完整序列化、摘要模板与分块。`Session.compact` 只累计统计并提交成功结果；手动 `/compact`、自动触发和超限恢复共用该调用。
+- **职责**：`compaction.Compact(ctx, provider, history, previous)` 接收不含系统 Prompt 的完整历史与旧检查点，集中处理校验、保留边界、完整序列化、摘要模板与分块，返回候选 `State`。`Session.compact` 累计统计并提交成功结果；手动 `/compact`、自动触发和超限恢复共用该调用。
 - **近期保留**：`recentCut` 从后向前选择接近 20k 的完整消息边界，assistant 工具调用与全部结果作为一个整体。始终至少保留最新的一个整体，其本身过大时允许超过近期预算；系统 Prompt 原样保留。
 - **摘要请求**：复用当前 Provider 的非流式 `Chat`，不提供工具、不通过主对话的 `s.chat` 校准预算或展示流式预览。首次使用 pi 的摘要 Prompt，有旧摘要时使用更新模板；源码注明 pi 提交和 MIT 许可。
 - **完整输入**：序列化用户文本、assistant 文本、工具名称、完整参数、调用 ID 和结果，不额外按字符数截断。工具执行阶段既有的输出大小限制不属于摘要截断。
 - **分块**：按摘要指令、旧摘要和固定余量计算输入预算，超预算时在 UTF-8 边界拆分文本，后续块继续更新前一块摘要。分块可跨序列化消息或参数文本，不省略内容；服务端上下文超限时拆小当前块继续，普通错误直接返回。
-- **提交与恢复**：仅接受非空、无工具、结束完整且未取消的摘要；`length` 等不完整回复不提交。成功后 `s.messages` 替换为系统 Prompt、带 `<context-summary>` 标记的 user 消息和近期原文，旧预算校准清零；失败时保持压缩前历史。
-- **存档边界**：沿用现有 Snapshot 格式。手动成功后立即保存，自动压缩和超限恢复在本轮结束时保存；较早原文由摘要替换，没有额外完整原文归档。恢复时重新生成系统 Prompt，并加载摘要与近期消息。
+- **提交与恢复**：仅接受非空、无工具、结束完整且未取消的摘要；`length` 等不完整回复不提交。候选检查点及其消息序列校验通过后更新 `s.compaction`，旧预算校准清零；`s.messages` 始终保留完整原始历史，失败时保留旧检查点。
+- **存档边界**：Snapshot v2 保存完整原始 `messages` 与独立 `compaction`，包括 `Summary` 和 `FirstKeptMessageIndex`。手动成功后立即保存，自动压缩和超限恢复在本轮结束时保存。恢复时重新生成系统 Prompt，并按检查点构造摘要与近期原文；v1 的旧摘要迁移入检查点，现存原文继续保留。
 - **统计与重试**：摘要模型调用与已返回的 usage 计入任务统计，失败也计入已产生的调用；摘要用量不能校准主对话。主对话超限后只重试当前请求一次，保留已完成工具结果及临时指令，不重放工具。
-- **阶段边界**：Day 13 已完成。修改文件、测试状态等信息仍由 LLM 归纳，没有独立字段；Day 14 继续补充发送前的消息序列校验和关键上下文保留验收。
+- **阶段边界**：Day 13 已完成。修改文件、测试状态等信息仍由 LLM 归纳，没有独立字段；Day 14 已接入严格发送前校验和语义验收测试入口，真实模型验收待通过。
 - **验证入口**：`apps/test/compaction/trigger_test.go`、`compact_test.go`，以及 `apps/test/agent/compact_test.go`、`apps/test/cli/compact_test.go`；全量 `go -C apps test ./...` 已通过。
+
+### Day 14 消息合法性与语义验收（2026-10-13）
+
+- **统一校验**：`provider.ValidateMessages` 校验角色字段、调用 ID、类型、工具名称、完整 JSON 对象参数，以及 assistant 调用与 tool 结果配对。ID 在同批次内唯一，结果顺序不限；一个批次完整结束后才能追加其他角色消息。连续 user 消息和批次之外的 system 指令合法。
+- **请求入口**：`Session.contextMessages() ([]provider.Message, error)` 在切片前校验检查点，再校验模型上下文；`s.chat` 在选择 Provider 能力前校验。`prepareRequest` 同时覆盖 `Chat` 和 `ChatStream`。非法消息在本地返回错误，包含消息索引及相关调用 ID。
+- **压缩与存档**：压缩前验证完整原始历史，候选检查点和其模型上下文通过校验后才提交；Session 保存和恢复复用公共协议校验，单独保留存档禁止 system 消息的规则。
+- **流程回归**：`semantic_test.go` 连续三次实际压缩并保存恢复，覆盖测试失败、修复后通过、再次修改尚未复测。Fake Provider 验证事实输入、旧摘要传递和最终检查点用于 Agent 续接；路径、命令和当前错误做准确原文检查。
+- **语义验收**：`semantic_live_test.go` 使用真实模型生成摘要，并用同一配置模型的独立请求逐项验收目标、约束和最新进度。肯定结论必须引用摘要原文；加入遗漏目标、约束反转和过时状态的负例。本地测试拒绝缺项、重复 ID、无依据证据、无效 JSON 及截断回复。
+- **启用方式**：普通 `go test` 默认跳过真实模型验收，显式设置 `MINICODE_TEST_LLM=1` 后读取 `apps/config/config.toml`；该环境变量只用于测试。命令见 `docs/spec.md` 的连续压缩语义验收小节。
+- **验证状态**：本地回归、全量 race 测试与 `go vet` 已通过；两次真实模型验收均在首次摘要请求遇到上游 `do_request_failed`，尚未进入语义判定。Day 14 保持进行中，服务恢复后需完成三轮逐项验收和三个负例。
+- **源码与测试**：`apps/internal/provider/messages.go`、`apps/internal/agent/compact.go`、`stream.go`、`apps/internal/compaction/compact.go`，以及 `apps/test/provider/messages_test.go`、`apps/test/compaction/semantic_test.go`、`semantic_live_test.go` 和现有 Agent、Session 回归。
 
 ## 6. 已知陷阱
 

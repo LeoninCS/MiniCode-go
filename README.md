@@ -164,9 +164,16 @@ minicode
 - ✅ Day 11：SSE 请求与事件解析、终端增量预览、用量事件、错误与中断处理；
 - ✅ Day 12：tool_calls 参数分片累积与校验、终端流式 Markdown 渲染、合并刷新、长文本视口与窗口尺寸变化处理；
 - ✅ Day 13：上下文预算、自动与手动压缩、固定保留近期 20k token、pi 滚动摘要、完整输入和分块处理；
-- 🔄 Day 14：已保留完整消息与工具批次，继续补充合法性校验和关键上下文保留验收。
+- 🔄 Day 14：已接入合法切分、严格发送前校验和连续压缩验收测试；真实模型语义验收待通过。
 
 ## 最近更新
+
+### 2026-10-13
+
+- 分离完整原始历史与模型上下文：Session v2 保存原始消息和独立压缩检查点，模型请求使用“系统 Prompt → 摘要 → 近期原文”；支持读取和迁移 v1 存档；
+- 接入公共 `provider.ValidateMessages`，在 Agent、流式与非流式 Provider 请求入口、压缩前后及存档保存恢复时校验消息结构、参数 JSON 和工具调用结果配对；非法消息在本地报错并阻止请求；
+- 加入三次连续压缩、保存恢复与 Agent 续接测试，覆盖“测试失败 → 修复后通过 → 再次修改尚未复测”；真实模型验收逐项检查目标、约束和进度，要求引用摘要原文，并设置遗漏目标、约束反转和过时状态的负例；
+- 本地回归、全量 race 测试及 `go vet` 已通过。真实模型验收尝试两次，均在首次摘要请求遇到上游 `do_request_failed`，尚未进入语义判定；Day 14 保持进行中。
 
 ### 2026-10-12
 
@@ -285,6 +292,7 @@ MiniCode-go/
     ├── internal/compaction/            # 上下文预算与 LLM 摘要压缩
     │   ├── trigger.go                  # token 粗估、usage 校准与触发阈值
     │   ├── compact.go                  # 近期消息保留、完整序列化与分块摘要
+    │   ├── state.go                    # 独立检查点、保留边界与模型上下文构造
     │   └── prompt.go                   # pi 首次和更新摘要 Prompt
     ├── internal/tools/                 # 工具实现 + 注册机制
     │   ├── registry.go                # Tool、ToolRegistry、参数公共校验
@@ -296,6 +304,7 @@ MiniCode-go/
     ├── internal/provider/              # Provider 抽象 + OpenAI 兼容客户端(纯源码)
     │   ├── provider.go                 # 接口、流式契约与配置工厂
     │   ├── types.go                    # 公共消息、响应、工具调用与错误
+    │   ├── messages.go                 # 公共消息序列与工具配对校验
     │   ├── openai.go                   # 非流式 HTTP 调用与共用请求校验
     │   └── openai_stream.go            # SSE 请求、事件解析、取消与关闭
     ├── internal/telemetry/             # OpenTelemetry / Langfuse 追踪配置
@@ -312,7 +321,9 @@ MiniCode-go/
         │   └── stream_test.go          # 自动流式调用、聚合与失败回滚
         ├── compaction/                 # 触发阈值、保留边界与完整摘要输入
         │   ├── trigger_test.go
-        │   └── compact_test.go
+        │   ├── compact_test.go
+        │   ├── semantic_test.go         # 三次压缩、事实输入、存档恢复与续接
+        │   └── semantic_live_test.go    # 显式启用的真实模型语义验收
         ├── tools/                      # 文件工具、bash 与注册表测试
         │   ├── bash_test.go
         │   ├── read_test.go
@@ -324,6 +335,7 @@ MiniCode-go/
             ├── provider_test.go        # 配置工厂与流式能力边界
             ├── openai_test.go
             ├── openai_stream_test.go   # SSE 协议、错误、取消与追踪
+            ├── messages_test.go        # 消息序列校验与非法请求零发送
             └── tool_calls_test.go
 ```
 
@@ -384,9 +396,11 @@ minicode --session 550e8400-e29b-41d4-a716-446655440000
 
 压缩固定保留最近约 `20,000 token` 的原始消息，使用当前模型和 pi 的摘要模板总结更早内容；再次压缩时更新已有摘要。这些预算均为代码常量，不提供配置项。保留边界按完整消息和工具批次选择，最新整体很大时，近期原文可能超过 20k。
 
-摘要输入完整发送，超预算时按 UTF-8 边界分块更新摘要，不额外截断工具结果。工具执行阶段原有的输出大小限制继续生效。没有可压缩旧内容时跳过模型调用；摘要失败、为空、被输出长度限制截断、返回工具调用或被取消时，不替换历史。
+摘要输入完整发送，超预算时按 UTF-8 边界分块更新摘要，不额外截断工具结果。工具执行阶段原有的输出大小限制继续生效。没有可压缩旧内容时跳过模型调用；摘要失败、为空、被输出长度限制截断、返回工具调用或被取消时，保留旧检查点和原始历史。
 
-成功后，内存历史更新为“系统 Prompt → 新摘要 → 近期原文”；存档保存摘要和近期原文，系统 Prompt 在恢复时重新生成。较早原文被摘要替换，现有快照不另存完整压缩前历史。手动压缩立即保存，自动压缩和超限恢复在本轮结束时保存。摘要请求的用量计入统计，主对话预算在下一次正常回复后重新校准。
+成功后，仅更新独立检查点中的摘要和近期消息起点，模型读取“系统 Prompt → 新摘要 → 近期原文”。完整原始消息继续保留在内存和 Session v2 存档中；恢复时重新生成系统 Prompt，并按检查点选择模型上下文。v1 存档会迁移为 v2，旧版已经丢弃的原文无法恢复。手动压缩立即保存，自动压缩和超限恢复在本轮结束时保存。摘要请求的用量计入统计，主对话预算在下一次正常回复后重新校准。
+
+压缩前、候选上下文提交前和模型请求发送前共用严格消息校验：角色字段、完整参数 JSON、同批次调用 ID 唯一性及调用与结果配对都要通过。缺少、重复或无对应调用的工具结果会在本地报错，停止该次模型请求。完整工具批次的结果可按任意顺序返回；摘要与最新输入形成连续 user 消息也可正常发送。
 
 模型明确返回上下文超限时，程序调用同一压缩函数，仅重试当前主对话请求一次，已完成的工具不会重新执行。代码未自动识别实际模型窗口；最新输入或工具批次本身过大时，压缩历史仍可能无法使请求放入窗口。详细流程见 [使用教程](docs/tutorial.md#5-上下文压缩compact) 和 [规格说明](docs/spec.md#43-上下文压缩)。
 
@@ -436,4 +450,10 @@ go -C apps test -count=1 ./test/...
 go -C apps test -race ./test/cli -run 'TestOutput|TestMiniCode_TerminalCtrlC' -count=1
 ```
 
-执行前审批、会话持久化、SSE 流式输出、实时 Markdown 渲染和 Day 13 的 LLM 上下文压缩已经接入；下一步继续 Day 14 的合法性校验与关键上下文保留验收。工具实现与注册机制见 `apps/internal/tools/`，压缩实现见 `apps/internal/compaction/`。
+真实模型语义验收需显式启用，读取 `apps/config/config.toml`，以独立模型请求逐项判断摘要是否保留目标、约束和最新进度；普通 `go test` 默认跳过该测试。该验收仅在测试阶段运行。
+
+```bash
+MINICODE_TEST_LLM=1 go -C apps test ./test/compaction -run TestCompact_LiveSemanticAcceptance -count=1 -v -timeout=10m
+```
+
+截至 2026-10-13，真实模型验收的两次尝试均被服务端上游 `do_request_failed` 阻断，尚未获得语义验收结果；服务恢复后可运行上述命令重试。执行前审批、会话持久化、SSE 流式输出、实时 Markdown 渲染、上下文压缩和严格发送前校验已经接入。Day 14 剩余工作是完成真实模型的关键上下文保留验收。工具实现见 `apps/internal/tools/`，压缩实现见 `apps/internal/compaction/`，消息校验见 `apps/internal/provider/messages.go`。
