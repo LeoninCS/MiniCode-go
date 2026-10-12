@@ -30,7 +30,7 @@ func TestSession_AutomaticCompactionBeforeRequest(t *testing.T) {
 					t.Fatalf("trigger before model request = %t, want %t", got, tc.want)
 				}
 				if len(req.Messages) != 2 || req.Messages[1].Text() != tc.input {
-					t.Fatal("placeholder compaction changed the conversation")
+					t.Fatal("compaction changed the latest user input without older history")
 				}
 				return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "done", "")}}}, nil
 			}}
@@ -84,11 +84,15 @@ func TestSession_AutomaticCompactionAfterRestore(t *testing.T) {
 	t.Chdir(t.TempDir())
 	largeInput := strings.Repeat("x", 983044)
 	output := &recordingOutput{}
-	calls := 0
+	calls, summaries := 0, 0
 	model := &fakeProvider{chat: func(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+		if len(req.Tools) == 0 && strings.Contains(req.Messages[0].Text(), "You are a context summarization assistant") {
+			summaries++
+			return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "restored checkpoint", ""), FinishReason: "stop"}}}, nil
+		}
 		calls++
-		if calls == 2 && (!hasAutoCompact(output) || len(req.Messages) != 4 || req.Messages[1].Text() != largeInput) {
-			t.Fatal("restored history was not included in the context budget before the request")
+		if calls == 2 && (!hasAutoCompact(output) || summaries == 0 || len(req.Messages) != 4 || !strings.Contains(req.Messages[1].Text(), "restored checkpoint") || req.Messages[3].Text() != "continue") {
+			t.Fatal("restored history was not compacted before the request")
 		}
 		return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "done", "")}}}, nil
 	}}
@@ -217,5 +221,102 @@ func TestSession_ContextOverflowDoesNotRetryAfterCancellation(t *testing.T) {
 	output := &recordingOutput{}
 	if err := newSession(t, model).Turn(ctx, "任务", output); !errors.Is(err, context.Canceled) || calls != 1 || len(output.events) != 0 {
 		t.Fatalf("error=%v, calls=%d, output=%q", err, calls, output.events)
+	}
+}
+
+func TestSession_AutomaticSummaryUsageDoesNotCalibrateConversation(t *testing.T) {
+	output := &recordingOutput{}
+	mainCalls, summaries := 0, 0
+	recent := strings.Repeat("r", 80000)
+	model := &fakeProvider{chat: func(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+		if len(req.Tools) == 0 {
+			summaries++
+			return &provider.ChatResponse{
+				Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "checkpoint", ""), FinishReason: "stop"}},
+				Usage:   &provider.Usage{PromptTokens: 245760, CompletionTokens: 1, TotalTokens: 245761},
+			}, nil
+		}
+		mainCalls++
+		if mainCalls == 1 {
+			return &provider.ChatResponse{
+				Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "old answer", "")}},
+				Usage:   &provider.Usage{TotalTokens: 245761},
+			}, nil
+		}
+		if summaries != 1 || !strings.Contains(req.Messages[1].Text(), "checkpoint") || req.Messages[2].Text() != recent {
+			t.Fatal("automatic summary was missing or summary usage triggered another compaction")
+		}
+		if mainCalls == 2 {
+			return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+				ID: "missing", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "unknown", Arguments: `{}`},
+			}}}}}}, nil
+		}
+		if len(req.Messages) != 5 || req.Messages[4].ToolCallID != "missing" {
+			t.Fatal("complete tool batch was lost after automatic compaction")
+		}
+		return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "done", "")}}}, nil
+	}}
+	session := newSession(t, model)
+	if err := session.Turn(context.Background(), strings.Repeat("old", 30000), &recordingOutput{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Turn(context.Background(), recent, output); err != nil {
+		t.Fatal(err)
+	}
+	if mainCalls != 3 || summaries != 1 || !hasAutoCompact(output) || output.processEvents[len(output.processEvents)-1] != "stats:3:1:245761" {
+		t.Fatalf("main calls=%d summaries=%d output=%q stats=%q", mainCalls, summaries, output.events, output.processEvents)
+	}
+}
+
+func TestSession_ContextRecoverySummarizesWithoutReplayingTools(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mainCalls, summaries := 0, 0
+	model := &fakeProvider{chat: func(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+		if len(req.Tools) == 0 {
+			summaries++
+			if !strings.Contains(req.Messages[1].Text(), strings.Repeat("x", 240000)) {
+				t.Fatal("recovery truncated the old input")
+			}
+			return &provider.ChatResponse{
+				Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "checkpoint", ""), FinishReason: "stop"}},
+				Usage:   &provider.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12},
+			}, nil
+		}
+		mainCalls++
+		switch mainCalls {
+		case 1:
+			return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "old answer", "")}}}, nil
+		case 2:
+			return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+				ID: "append", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "bash", Arguments: `{"command":"printf x >> executed.txt"}`},
+			}}}}}}, nil
+		case 3:
+			return nil, &provider.APIError{StatusCode: 400, Code: "context_length_exceeded"}
+		case 4:
+			if summaries != 1 || len(req.Messages) != 6 || !strings.Contains(req.Messages[1].Text(), "checkpoint") || req.Messages[3].Text() != "执行一次" || req.Messages[5].ToolCallID != "append" {
+				t.Fatal("recovery lost checkpoint, current input, or completed tool result")
+			}
+			return &provider.ChatResponse{
+				Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "done", "")}},
+				Usage:   &provider.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			}, nil
+		default:
+			t.Fatal("recovery issued extra model calls")
+			return nil, nil
+		}
+	}}
+	session := newSession(t, model)
+	if err := session.Turn(context.Background(), strings.Repeat("x", 240000), &recordingOutput{}); err != nil {
+		t.Fatal(err)
+	}
+	output := &recordingOutput{}
+	if err := session.Turn(context.Background(), "执行一次", output); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile("executed.txt"); err != nil || string(data) != "x" {
+		t.Fatalf("tool execution: data=%q err=%v", data, err)
+	}
+	if got := output.processEvents[len(output.processEvents)-1]; got != "stats:4:1:14" {
+		t.Fatalf("recovery usage accounting: %s", got)
 	}
 }

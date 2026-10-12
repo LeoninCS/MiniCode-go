@@ -239,8 +239,29 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 			case "":
 				continue
 			case compactCommand:
-				s.messages = compaction.Compact(s.messages)
-				output.Message("已触发上下文压缩，当前压缩策略尚未实现，历史保持不变。")
+				compactCtx, cancelCompact := context.WithTimeout(ctx, timeout)
+				started := time.Now()
+				stats := TaskStats{}
+				changed, err := s.compact(compactCtx, &stats)
+				cancelCompact()
+				if err == nil && changed {
+					err = s.save(nil)
+				}
+				if stats.ModelCalls > 0 {
+					stats.Duration = time.Since(started)
+					output.TaskDone(stats)
+				}
+				if err != nil {
+					output.ToolError(err)
+					failed = true
+					if ctx.Err() != nil {
+						return 1
+					}
+				} else if changed {
+					output.Message(fmt.Sprintf("已完成上下文压缩，保留最近约 %d token 的原始消息。", compaction.KeepRecentTokens))
+				} else {
+					output.Message("当前没有需要压缩的旧消息。")
+				}
 				continue
 			}
 			turnCtx, cancelTurn := context.WithTimeout(ctx, timeout)
@@ -310,7 +331,9 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 	for turn := 0; turn < maxTurns; turn++ {
 		turnNumber := turn + 1
 		req := provider.ChatRequest{Messages: s.messages, Tools: toolDefinitions}
-		s.compactIfNeeded(req, output)
+		if err := s.compactIfNeeded(ctx, req, output, &stats); err != nil {
+			return err
+		}
 		req.Messages = s.messages
 		stats.ModelCalls++
 		output.ModelStart(turnNumber)
@@ -425,7 +448,9 @@ func (s *Session) Close() error {
 func (s *Session) summarizeAtTurnLimit(ctx context.Context, output Output, stats *TaskStats) (string, *provider.ChatResponse, error) {
 	instruction := provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, "")
 	req := provider.ChatRequest{Messages: append(s.messages, instruction)}
-	s.compactIfNeeded(req, output)
+	if err := s.compactIfNeeded(ctx, req, output, stats); err != nil {
+		return "", nil, err
+	}
 	req.Messages = append(s.messages, instruction)
 	resp, err := s.chatWithContextRecovery(ctx, req, output, stats)
 	if err != nil {
