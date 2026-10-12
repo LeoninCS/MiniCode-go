@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/MiniCode-go/minicode/internal/agent"
+	"github.com/MiniCode-go/minicode/internal/compaction"
 	"github.com/MiniCode-go/minicode/internal/provider"
+	sessionstore "github.com/MiniCode-go/minicode/internal/session"
 )
 
 func TestSession_AutomaticCompactionBeforeRequest(t *testing.T) {
@@ -318,5 +321,68 @@ func TestSession_ContextRecoverySummarizesWithoutReplayingTools(t *testing.T) {
 	}
 	if got := output.processEvents[len(output.processEvents)-1]; got != "stats:4:1:14" {
 		t.Fatalf("recovery usage accounting: %s", got)
+	}
+}
+
+func TestSession_TurnLimitRecoveryWithCheckpointPreservesInstructionAndArchive(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	const id = "11111111-1111-4111-8111-111111111111"
+	history := []provider.Message{
+		provider.NewMessage(provider.RoleUser, "ARCHIVED:"+strings.Repeat("x", 1200000), ""),
+		provider.NewMessage(provider.RoleAssistant, "archived answer", ""),
+		provider.NewMessage(provider.RoleUser, "ACTIVE OLD:"+strings.Repeat("a", 240000), ""),
+		provider.NewMessage(provider.RoleAssistant, "active old answer", ""),
+	}
+	path := writeSessionFile(t, workspace, id, sessionstore.Snapshot{
+		Version: sessionstore.Version, ID: id, Workspace: workspace, LastTurnStatus: "completed", Messages: history,
+		Compaction: &compaction.State{Summary: "previous checkpoint", FirstKeptMessageIndex: 2},
+	})
+	mainCalls, summaries := 0, 0
+	model := &fakeProvider{chat: func(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+		for _, message := range req.Messages {
+			if strings.Contains(message.Text(), "ARCHIVED:") {
+				t.Fatal("previously summarized raw archive was sent to a model")
+			}
+		}
+		if strings.Contains(req.Messages[0].Text(), "You are a context summarization assistant") {
+			summaries++
+			if !strings.Contains(req.Messages[1].Text(), "ACTIVE OLD:") || !strings.Contains(req.Messages[1].Text(), "<previous-summary>\nprevious checkpoint\n</previous-summary>") {
+				t.Fatal("recovery did not summarize newly old history with previous checkpoint")
+			}
+			return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "new checkpoint", ""), FinishReason: "stop"}}}, nil
+		}
+		mainCalls++
+		if mainCalls <= 500 {
+			return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
+				ID: "again", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "unknown", Arguments: `{}`},
+			}}}}}}, nil
+		}
+		if len(req.Tools) != 0 || req.Messages[len(req.Messages)-1].Role != provider.RoleSystem || !strings.Contains(req.Messages[len(req.Messages)-1].Text(), "停止调用工具") {
+			t.Fatal("turn limit recovery lost the temporary final instruction")
+		}
+		if mainCalls == 501 {
+			return nil, &provider.APIError{StatusCode: 400, Code: "context_length_exceeded"}
+		}
+		if mainCalls != 502 || summaries != 1 || !strings.Contains(req.Messages[1].Text(), "new checkpoint") {
+			t.Fatal("unexpected final request after compaction")
+		}
+		return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "stopped", "")}}}, nil
+	}}
+	session, err := agent.OpenSessionByID(model, nil, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	output := &recordingOutput{}
+	if err := session.Turn(context.Background(), "repeat", output); err == nil || !strings.Contains(err.Error(), "maximum model turns") {
+		t.Fatalf("turn limit: %v", err)
+	}
+	saved, err := sessionstore.Load(path)
+	if err != nil || len(saved.Messages) != 1005 || !reflect.DeepEqual(saved.Messages[:4], history) || saved.Compaction == nil || saved.Compaction.FirstKeptMessageIndex <= 2 || saved.Compaction.Summary != "new checkpoint" {
+		t.Fatalf("recovery changed raw history or failed to update checkpoint: err=%v messages=%d", err, len(saved.Messages))
+	}
+	if got := output.processEvents[len(output.processEvents)-1]; got != "stats:503:500:0" {
+		t.Fatalf("recovery counts: %s", got)
 	}
 }

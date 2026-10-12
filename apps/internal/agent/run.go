@@ -51,7 +51,8 @@ type Session struct {
 	approver      ToolApprover
 	workspace     string
 	sessionPath   string
-	messages      []provider.Message
+	messages      []provider.Message // 系统 Prompt + 完整原始历史，压缩不改写。
+	compaction    *compaction.State
 	contextBudget compaction.TokenTrigger
 }
 
@@ -153,6 +154,10 @@ func (s *Session) restore(snapshot sessionstore.Snapshot) error {
 		return fmt.Errorf("load session: workspace mismatch: file uses %q, current workspace is %q", snapshot.Workspace, s.workspace)
 	}
 	s.messages = append(s.messages[:1], snapshot.Messages...)
+	if snapshot.Compaction != nil {
+		checkpoint := *snapshot.Compaction
+		s.compaction = &checkpoint
+	}
 	if snapshot.ID != "" {
 		s.id = snapshot.ID
 	}
@@ -172,7 +177,7 @@ func (s *Session) save(turnErr error) error {
 	}
 	return sessionstore.Save(s.sessionPath, sessionstore.Snapshot{
 		Version: sessionstore.Version, ID: s.id, Workspace: s.workspace,
-		LastTurnStatus: status, Messages: s.messages[1:],
+		LastTurnStatus: status, Messages: s.messages[1:], Compaction: s.compaction,
 	})
 }
 
@@ -330,11 +335,11 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
 		turnNumber := turn + 1
-		req := provider.ChatRequest{Messages: s.messages, Tools: toolDefinitions}
+		req := provider.ChatRequest{Messages: s.contextMessages(), Tools: toolDefinitions}
 		if err := s.compactIfNeeded(ctx, req, output, &stats); err != nil {
 			return err
 		}
-		req.Messages = s.messages
+		req.Messages = s.contextMessages()
 		stats.ModelCalls++
 		output.ModelStart(turnNumber)
 		resp, err := s.chatWithContextRecovery(ctx, req, output, &stats)
@@ -447,11 +452,11 @@ func (s *Session) Close() error {
 // summarizeAtTurnLimit 在完整工具结果之后请求一次总结,不再提供或执行工具。
 func (s *Session) summarizeAtTurnLimit(ctx context.Context, output Output, stats *TaskStats) (string, *provider.ChatResponse, error) {
 	instruction := provider.NewMessage(provider.RoleSystem, turnLimitSummaryPrompt, "")
-	req := provider.ChatRequest{Messages: append(s.messages, instruction)}
+	req := provider.ChatRequest{Messages: append(s.contextMessages(), instruction)}
 	if err := s.compactIfNeeded(ctx, req, output, stats); err != nil {
 		return "", nil, err
 	}
-	req.Messages = append(s.messages, instruction)
+	req.Messages = append(s.contextMessages(), instruction)
 	resp, err := s.chatWithContextRecovery(ctx, req, output, stats)
 	if err != nil {
 		return "", nil, err

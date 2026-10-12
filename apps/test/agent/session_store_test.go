@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/MiniCode-go/minicode/internal/agent"
+	"github.com/MiniCode-go/minicode/internal/compaction"
 	"github.com/MiniCode-go/minicode/internal/provider"
 	sessionstore "github.com/MiniCode-go/minicode/internal/session"
 )
@@ -172,7 +174,7 @@ func TestSessionPersistence_RejectsInvalidFiles(t *testing.T) {
 		want string
 	}{
 		{name: "invalid ID", body: map[string]any{"version": 1, "id": "../outside", "workspace": workspace, "last_turn_status": "completed", "messages": []any{}}, want: "invalid session ID"},
-		{name: "unsupported version", body: map[string]any{"version": 2, "workspace": workspace, "last_turn_status": "completed", "messages": []any{}}, want: "unsupported version"},
+		{name: "unsupported version", body: map[string]any{"version": 3, "workspace": workspace, "last_turn_status": "completed", "messages": []any{}}, want: "unsupported version"},
 		{name: "workspace mismatch", body: map[string]any{"version": 1, "workspace": workspace + "-other", "last_turn_status": "completed", "messages": []any{}}, want: "workspace mismatch"},
 		{name: "incomplete tool call", body: map[string]any{"version": 1, "workspace": workspace, "last_turn_status": "completed", "messages": []provider.Message{{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}}}, want: "missing results"},
 	}
@@ -247,4 +249,104 @@ func writeSessionFile(t *testing.T, workspace, id string, snapshot any) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestSessionPersistence_RestoresLargeArchiveWithoutResummarizing(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	const id = "11111111-1111-4111-8111-111111111111"
+	archived := "ARCHIVED REQUEST:" + strings.Repeat("x", 1200000)
+	history := []provider.Message{
+		provider.NewMessage(provider.RoleUser, archived, ""),
+		provider.NewMessage(provider.RoleAssistant, "archived answer", ""),
+		provider.NewMessage(provider.RoleUser, strings.Repeat("r", 80000), ""),
+		provider.NewMessage(provider.RoleAssistant, "recent answer", ""),
+	}
+	checkpoint := &compaction.State{Summary: "persisted checkpoint", FirstKeptMessageIndex: 2}
+	path := writeSessionFile(t, workspace, id, sessionstore.Snapshot{
+		Version: sessionstore.Version, ID: id, Workspace: workspace, LastTurnStatus: "completed", Messages: history, Compaction: checkpoint,
+	})
+	calls := 0
+	model := &fakeProvider{chat: func(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+		calls++
+		if len(req.Tools) == 0 || !strings.Contains(req.Messages[1].Text(), checkpoint.Summary) {
+			t.Fatal("restoring a checkpoint regenerated a summary")
+		}
+		for _, message := range req.Messages {
+			if strings.Contains(message.Text(), "ARCHIVED REQUEST:") || message.Text() == "archived answer" {
+				t.Fatal("archived messages leaked into model context")
+			}
+		}
+		if calls == 1 {
+			// 恢复时原始历史比模型上下文长，超限重试不能按原始历史长度切片。
+			return nil, &provider.APIError{StatusCode: 400, Code: "context_length_exceeded"}
+		}
+		return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "continued", "")}}}, nil
+	}}
+	session, err := agent.OpenSessionByID(model, nil, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := &recordingOutput{}
+	if err := session.Turn(context.Background(), "continue", output); err != nil {
+		_ = session.Close()
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || hasAutoCompact(output) {
+		t.Fatalf("restore used archive for context budget: calls=%d automatic=%t", calls, hasAutoCompact(output))
+	}
+	saved, err := sessionstore.Load(path)
+	if err != nil || len(saved.Messages) != 6 || !reflect.DeepEqual(saved.Messages[:4], history) || !reflect.DeepEqual(saved.Compaction, checkpoint) {
+		t.Fatalf("archive changed after recovery: err=%v messages=%d", err, len(saved.Messages))
+	}
+	restored, err := agent.OpenSessionByID(model, nil, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restored.Close() })
+	if err := restored.Turn(context.Background(), "continue again", &recordingOutput{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("reopening checkpoint made extra model calls: %d", calls)
+	}
+	savedAgain, err := sessionstore.Load(path)
+	if err != nil || len(savedAgain.Messages) != 8 || !reflect.DeepEqual(savedAgain.Messages[:6], saved.Messages) || !reflect.DeepEqual(savedAgain.Compaction, checkpoint) {
+		t.Fatal("reopening lost original archive or checkpoint")
+	}
+}
+
+func TestSessionPersistence_RestoresV1SummaryAsCheckpoint(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	const id = "11111111-1111-4111-8111-111111111111"
+	history := []provider.Message{provider.NewMessage(provider.RoleUser, "recent request", ""), provider.NewMessage(provider.RoleAssistant, "recent answer", "")}
+	checkpoint := &compaction.State{Summary: "legacy checkpoint"}
+	legacyMessages := checkpoint.ContextMessages(history)
+	path := writeSessionFile(t, workspace, id, sessionstore.Snapshot{
+		Version: 1, ID: id, Workspace: workspace, LastTurnStatus: "completed", Messages: legacyMessages,
+	})
+	calls := 0
+	model := &fakeProvider{chat: func(_ context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+		calls++
+		if len(req.Tools) == 0 || len(req.Messages) != 5 || !reflect.DeepEqual(req.Messages[1:4], legacyMessages) || req.Messages[4].Text() != "continue" {
+			t.Fatal("legacy restore changed the previous model context")
+		}
+		return &provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "continued", "")}}}, nil
+	}}
+	session, err := agent.OpenSessionByID(model, nil, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	if err := session.Turn(context.Background(), "continue", &recordingOutput{}); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := sessionstore.Load(path)
+	if err != nil || calls != 1 || saved.Version != 2 || len(saved.Messages) != 4 || !reflect.DeepEqual(saved.Messages[:2], history) || !reflect.DeepEqual(saved.Compaction, checkpoint) {
+		t.Fatalf("legacy checkpoint was not persisted as v2: calls=%d err=%v", calls, err)
+	}
 }

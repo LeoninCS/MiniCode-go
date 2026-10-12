@@ -168,11 +168,11 @@ func TestMiniCode_ManualLLMCompactionPersistsAndResumes(t *testing.T) {
 				t.Fatal(err)
 			}
 			if failSummary {
-				if len(snapshot.Messages) != 4 || snapshot.Messages[0].Text() != old {
+				if len(snapshot.Messages) != 4 || snapshot.Messages[0].Text() != old || snapshot.Compaction != nil {
 					t.Fatal("failed summary changed persisted history")
 				}
-			} else if len(snapshot.Messages) != 3 || !strings.Contains(snapshot.Messages[0].Text(), "persisted checkpoint") || snapshot.Messages[1].Text() != recent {
-				t.Fatal("manual compaction was not saved before exit")
+			} else if len(snapshot.Messages) != 4 || snapshot.Messages[0].Text() != old || snapshot.Messages[2].Text() != recent || snapshot.Compaction == nil || snapshot.Compaction.Summary != "persisted checkpoint" || snapshot.Compaction.FirstKeptMessageIndex != 2 {
+				t.Fatal("manual compaction did not save complete raw history and checkpoint before exit")
 			}
 			for i := 0; i < 3; i++ {
 				_ = readRequest(t, requests)
@@ -182,8 +182,13 @@ func TestMiniCode_ManualLLMCompactionPersistsAndResumes(t *testing.T) {
 				t.Fatalf("resume: code=%d stderr=%q", code, stderr)
 			}
 			req := readRequest(t, requests)
-			if len(req.Messages) != len(snapshot.Messages)+2 || !reflect.DeepEqual(req.Messages[1:len(req.Messages)-1], snapshot.Messages) || req.Messages[len(req.Messages)-1].Text() != "continue" {
+			contextMessages := snapshot.Compaction.ContextMessages(snapshot.Messages)
+			if len(req.Messages) != len(contextMessages)+2 || !reflect.DeepEqual(req.Messages[1:len(req.Messages)-1], contextMessages) || req.Messages[len(req.Messages)-1].Text() != "continue" {
 				t.Fatal("resumed request did not preserve saved context")
+			}
+			updated, err := sessionstore.Load(path)
+			if err != nil || len(updated.Messages) != 6 || !reflect.DeepEqual(updated.Messages[:4], snapshot.Messages) || !reflect.DeepEqual(updated.Compaction, snapshot.Compaction) {
+				t.Fatal("resuming did not append raw messages while retaining the checkpoint")
 			}
 		})
 	}

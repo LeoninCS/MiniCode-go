@@ -19,10 +19,10 @@ const (
 	summarySuffix    = "\n</context-summary>"
 )
 
-// Result 仅在 Changed 为 true 时包含可提交的新历史；失败时 Messages 保持原样。
+// Result 仅在 Changed 为 true 时包含可提交的新检查点；失败时 State 保持原样。
 // 摘要请求用量用于任务统计，不能校准主对话的上下文占用。
 type Result struct {
-	Messages       []provider.Message
+	State          *State
 	Changed        bool
 	ModelCalls     int
 	Usage          provider.Usage
@@ -31,45 +31,38 @@ type Result struct {
 
 // Compact 保留最近约 20k token 的原始消息，使用 LLM 总结更早的内容。
 // 工具调用和全部结果作为整体保留；最新一条消息或工具批次可超过保留预算。
-// 摘要输入不截断，超出单次请求预算时分块更新摘要，成功前不修改历史。
-func Compact(ctx context.Context, client provider.Provider, messages []provider.Message) (result Result, err error) {
-	result.Messages = messages
+// history 是不含系统 Prompt 的完整原始历史；压缩只更新检查点，不改写历史。
+// 摘要输入不截断，超出单次请求预算时分块更新摘要。
+func Compact(ctx context.Context, client provider.Provider, history []provider.Message, previous *State) (result Result, err error) {
+	result.State = previous
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	if err := previous.Validate(history); err != nil {
+		return result, err
+	}
 	start := 0
-	for start < len(messages) && messages[start].Role == provider.RoleSystem {
-		start++
+	previousSummary := ""
+	if previous != nil {
+		start = previous.FirstKeptMessageIndex
+		previousSummary = previous.Summary
 	}
-	systemEnd := start
-	previous := ""
-	if start < len(messages) {
-		message := messages[start]
-		if message.Role == provider.RoleUser && strings.HasPrefix(message.Text(), summaryPrefix) && strings.HasSuffix(message.Text(), summarySuffix) {
-			previous = strings.TrimSuffix(strings.TrimPrefix(message.Text(), summaryPrefix), summarySuffix)
-			start++
-		}
-	}
-	cut := recentCut(messages, start)
+	cut := recentCut(history, start)
 	if cut <= start {
 		return result, nil
 	}
 	if client == nil {
 		return result, errors.New("compaction: nil provider")
 	}
-	transcript := serializeConversation(messages[start:cut])
-	summary, err := summarize(ctx, client, transcript, previous, &result)
+	transcript := serializeConversation(history[start:cut])
+	summary, err := summarize(ctx, client, transcript, previousSummary, &result)
 	if err != nil {
 		return result, fmt.Errorf("compaction: summarize history: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	compacted := make([]provider.Message, 0, systemEnd+1+len(messages)-cut)
-	compacted = append(compacted, messages[:systemEnd]...)
-	compacted = append(compacted, provider.NewMessage(provider.RoleUser, summaryPrefix+summary+summarySuffix, ""))
-	compacted = append(compacted, messages[cut:]...)
-	result.Messages = compacted
+	result.State = &State{Summary: summary, FirstKeptMessageIndex: cut}
 	result.Changed = true
 	return result, nil
 }

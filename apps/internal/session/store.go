@@ -11,23 +11,26 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/MiniCode-go/minicode/internal/compaction"
 	"github.com/MiniCode-go/minicode/internal/provider"
 	"github.com/google/uuid"
 )
 
 const (
 	// Version 是当前 Session 文件格式版本。
-	Version             = 1
+	Version             = 2
+	legacyVersion       = 1
 	maxSessionFileBytes = 64 << 20
 )
 
-// Snapshot 是磁盘上的会话快照。系统 Prompt 不落盘，由 Agent 恢复时重新生成。
+// Snapshot 保存完整原始消息及独立压缩检查点。系统 Prompt 在恢复时重新生成。
 type Snapshot struct {
 	Version        int                `json:"version"`
 	ID             string             `json:"id"`
 	Workspace      string             `json:"workspace"`
 	LastTurnStatus string             `json:"last_turn_status"`
 	Messages       []provider.Message `json:"messages"`
+	Compaction     *compaction.State  `json:"compaction,omitempty"`
 }
 
 // Load 读取并严格校验一个 Session 文件。
@@ -60,6 +63,19 @@ func Load(path string) (Snapshot, error) {
 	if err := Validate(snapshot); err != nil {
 		return Snapshot{}, fmt.Errorf("load session: %w", err)
 	}
+	if snapshot.Version == legacyVersion {
+		// v1 的旧摘要已替换过原文；保留现有记录，将摘要移入独立检查点。
+		if len(snapshot.Messages) > 0 {
+			if summary, ok := compaction.LegacySummary(snapshot.Messages[0]); ok {
+				snapshot.Compaction = &compaction.State{Summary: summary}
+				snapshot.Messages = snapshot.Messages[1:]
+			}
+		}
+		snapshot.Version = Version
+		if err := Validate(snapshot); err != nil {
+			return Snapshot{}, fmt.Errorf("load session: migrate v1: %w", err)
+		}
+	}
 	return snapshot, nil
 }
 
@@ -75,7 +91,7 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 
 // Validate 检查快照版本、元数据以及工具调用与结果的协议配对。
 func Validate(snapshot Snapshot) error {
-	if snapshot.Version != Version {
+	if snapshot.Version != Version && snapshot.Version != legacyVersion {
 		return fmt.Errorf("unsupported version %d (expected %d)", snapshot.Version, Version)
 	}
 	// 旧版 v1 文件没有 ID；允许读取，恢复后由 Agent 补齐并保存。
@@ -90,7 +106,13 @@ func Validate(snapshot Snapshot) error {
 	if strings.TrimSpace(snapshot.Workspace) == "" {
 		return errors.New("workspace is empty")
 	}
-	return validateMessages(snapshot.Messages)
+	if err := validateMessages(snapshot.Messages); err != nil {
+		return err
+	}
+	if snapshot.Version == legacyVersion && snapshot.Compaction != nil {
+		return errors.New("v1 session cannot contain compaction metadata")
+	}
+	return snapshot.Compaction.Validate(snapshot.Messages)
 }
 
 // ValidateID 要求会话 ID 为标准小写 UUID，便于安全地用作文件名。
@@ -161,6 +183,9 @@ func validateMessages(messages []provider.Message) error {
 
 // Save 校验快照，随后在目标目录写入并同步临时文件，再原子替换目标。
 func Save(path string, snapshot Snapshot) error {
+	if snapshot.Version != Version {
+		return fmt.Errorf("save session: unsupported version %d (expected %d)", snapshot.Version, Version)
+	}
 	if err := ValidateID(snapshot.ID); err != nil {
 		return fmt.Errorf("save session: %w", err)
 	}
@@ -188,6 +213,13 @@ func Save(path string, snapshot Snapshot) error {
 	}
 	if err := writer.Flush(); err != nil {
 		return fmt.Errorf("save session: flush temporary file: %w", err)
+	}
+	info, err := temp.Stat()
+	if err != nil {
+		return fmt.Errorf("save session: stat temporary file: %w", err)
+	}
+	if info.Size() > maxSessionFileBytes {
+		return fmt.Errorf("save session: file exceeds %d byte limit", maxSessionFileBytes)
 	}
 	if err := temp.Sync(); err != nil {
 		return fmt.Errorf("save session: sync temporary file: %w", err)

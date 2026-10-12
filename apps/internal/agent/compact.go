@@ -21,7 +21,7 @@ func (s *Session) compactIfNeeded(ctx context.Context, req provider.ChatRequest,
 
 // compact 是三个入口共用的调用适配，只提交完整成功的摘要。
 func (s *Session) compact(ctx context.Context, stats *TaskStats) (bool, error) {
-	result, err := compaction.Compact(ctx, s.client, s.messages)
+	result, err := compaction.Compact(ctx, s.client, s.messages[1:], s.compaction)
 	stats.ModelCalls += result.ModelCalls
 	stats.InputTokens += result.Usage.PromptTokens
 	stats.OutputTokens += result.Usage.CompletionTokens
@@ -31,11 +31,19 @@ func (s *Session) compact(ctx context.Context, stats *TaskStats) (bool, error) {
 		return false, err
 	}
 	if result.Changed {
-		s.messages = result.Messages
+		s.compaction = result.State
 		// 新历史与上次模型用量不再对应，直到主对话下一次回复再重新校准。
 		s.contextBudget = compaction.TokenTrigger{}
 	}
 	return result.Changed, nil
+}
+
+// contextMessages 临时构造模型上下文，完整原文继续留在 s.messages 和会话存档中。
+func (s *Session) contextMessages() []provider.Message {
+	body := s.compaction.ContextMessages(s.messages[1:])
+	messages := make([]provider.Message, 0, 1+len(body))
+	messages = append(messages, s.messages[0])
+	return append(messages, body...)
 }
 
 // chatWithContextRecovery 对上下文超限触发压缩，并只重试当前模型请求一次。
@@ -49,11 +57,11 @@ func (s *Session) chatWithContextRecovery(ctx context.Context, req provider.Chat
 		return nil, ctx.Err()
 	}
 	// 总结请求带有额外系统指令；压缩历史后仍须保留，且不能写入会话历史。
-	extra := append([]provider.Message(nil), req.Messages[len(s.messages):]...)
+	extra := append([]provider.Message(nil), req.Messages[len(s.contextMessages()):]...)
 	if _, compactErr := s.compact(ctx, stats); compactErr != nil {
 		return nil, fmt.Errorf("context overflow recovery: %w", errors.Join(err, compactErr))
 	}
-	req.Messages = append(s.messages, extra...)
+	req.Messages = append(s.contextMessages(), extra...)
 	output.Message("模型提示上下文超限，已触发压缩，将重试当前模型请求一次。")
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
