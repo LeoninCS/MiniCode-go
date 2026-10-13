@@ -12,7 +12,7 @@ MiniCode-go 是一个使用 Go 从零实现的、以 CLI 为主要交互入口�
 
 项目定位为一个**简单但完整的教学型终端 Agent**：尽量减少框架依赖和非必要抽象，但保留一个 Coding Agent 的核心能力，包括模型调用、工具调用、Agent Loop、CLI 会话、Session 持久化、上下文压缩、项目记忆、执行前确认、流式输出和结果验证。
 
-当前从单 Agent、单任务、单本地工作区开始，不提供 Web UI、IDE 插件或多 Agent，重点是通过逐步实现一个可运行的最小闭环，理解模型、Agent、工具和宿主程序之间的协作方式。项目长期记忆使用工作区根目录的 `MiniCode.md`，可在新会话中复用项目约定。
+当前从单 Agent、单任务、单本地工作区开始，不提供 Web UI、IDE 插件或多 Agent，重点是通过逐步实现一个可运行的最小闭环，理解模型、Agent、工具和宿主程序之间的协作方式。项目长期记忆使用工作区根目录的 `MiniCode.md`，保存常驻约定和按需详情目录。本项目以 `apps/` 为完整运行工作区，记忆入口是 [apps/MiniCode.md](apps/MiniCode.md)。
 
 ## 🚀 快速使用（从源码构建）
 
@@ -67,9 +67,9 @@ minicode -h
 
 ### 3. 配置模型服务
 
-MiniCode 需要一个兼容 OpenAI `/chat/completions` 接口的模型服务。配置只从**启动目录下的固定路径** `apps/config/config.toml` 读取，不再读取 `.env`、`MINICODE_*` / `LANGFUSE_*` 环境变量，也不支持通过 CLI 参数覆盖模型配置。
+MiniCode 需要一个兼容 OpenAI `/chat/completions` 接口的模型服务。配置优先读取**启动目录下的** `config/config.toml`，仅当文件名确实不存在时兼容旧路径 `apps/config/config.toml`。首选文件存在但不可读、为目录、符号链接断开、TOML 错误或缺少必填字段时直接报错，不回退到旧配置。不读取 `.env`、`MINICODE_*` / `LANGFUSE_*` 环境变量，也不支持通过 CLI 参数覆盖模型配置。
 
-在本仓库根目录运行时，可复制模板：
+本项目从 `apps/` 启动。在仓库根目录准备配置，下面的文件对应运行工作区内的 `config/config.toml`：
 
 ```bash
 cp apps/config/config.example.toml apps/config/config.toml
@@ -94,7 +94,7 @@ name = "deepseek-chat"
 
 当前没有思考强度配置项，请求不发送 `reasoning_effort`，由模型服务或网关采用默认设置。以 `gpt-5.6-sol` 为例，官方默认值为 `medium`；使用中转网关时，实际档位以网关设置为准。见 [OpenAI 模型说明](https://developers.openai.com/api/docs/models/gpt-5.6-sol)。
 
-> MiniCode 的工作区就是启动命令时的目录。因此在其他项目中运行时，需要在该项目中创建 `apps/config/config.toml`；配置文件路径目前不可自定义。
+> MiniCode 的工作区就是启动命令时的目录。在其他项目中使用时，创建该项目的 `config/config.toml`，再从该目录启动；旧布局仍可使用 `apps/config/config.toml`，配置文件路径不可自定义。
 
 可选地接入 Langfuse：
 
@@ -128,6 +128,13 @@ minicode
 ```
 
 如果跳过了上面的 PATH 安装步骤，也可以使用可执行文件的完整路径启动。
+
+开发本项目时，从仓库根目录进入 `apps/`，让文件工具、记忆和 Session 使用同一个完整工作区：
+
+```bash
+cd apps
+../bin/minicode
+```
 
 启动后直接输入任务，例如：
 
@@ -171,7 +178,7 @@ minicode
 - ✅ Day 12：tool_calls 参数分片累积与校验、终端流式 Markdown 渲染、合并刷新、长文本视口与窗口尺寸变化处理；
 - ✅ Day 13：上下文预算、自动与手动压缩、固定保留近期 20k token、pi 滚动摘要、完整输入和分块处理；
 - ✅ Day 14：合法切分、严格发送前校验、连续压缩与恢复测试，以及真实模型逐项语义验收和三个负例均已通过；
-- 🔄 Day 15：已接入 `MiniCode.md` 加载、预算校验、Session 上下文与压缩，以及通过现有文件工具写入、更新、删除和写后刷新；按需索引与专用记忆命令尚未实现。
+- 🔄 Day 15：已接入常驻记忆、Markdown 按需索引、专题读取、文件工具维护与写后刷新，并迁移到 `apps/` 工作区；宿主流程测试通过，真实模型的选择与维护验收待补。专用记忆命令不在实现范围内。
 
 ## 最近更新
 
@@ -183,6 +190,8 @@ minicode
 - 接入工作区根目录 `MiniCode.md`：检查 UTF-8、NUL、64 KiB 文件上限和 4,096 token 原文预算；文件不存在或为空时不注入，读取错误明确返回，不截断内容；
 - 项目记忆独立于 Session 历史和摘要，每个用户轮次及手动 `/compact` 前重新读取；成功 `write` / `edit` 根目录记忆后，整批工具结果完成再刷新，下一次模型请求使用新内容；
 - 复用 `read` / `write` / `edit` 和现有审批维护记忆；写入前校验完整候选内容。系统 Prompt 约定仅在用户明确要求时保存、更新或删除，临时进度留在 Session；
+- 实现按需记忆：`MiniCode.md` 常驻关键约定和简短目录，专题正文放在 `.minicode/memory/*.md`，由模型按任务调用 `read`；详情共用 UTF-8、NUL 和 64 KiB 检查，不套用常驻 4,096 token 预算；
+- 记忆入口迁为 `apps/MiniCode.md`，四个本地专题位于 `apps/.minicode/memory/`。从 `apps/` 启动时读取 `config/config.toml`，文件不存在时兼容旧配置路径；对应实现提交为 `9e9a857`；
 - 接入会话级全屏界面：输入区固定底部，流式预览、最终回复、工具状态、审批、统计和错误统一显示在会话区，退出时恢复原终端；
 - 支持等待输入和审批时通过滚轮、触控板或 PageUp/PageDown 查看消息；兼容 SGR 与 X10 鼠标事件，滚动和点击不会改动输入草稿，鼠标模式随输入读取开启和关闭；
 - Day 14 真实模型语义验收已通过：使用配置模型 `gpt-5.6-sol`，三轮压缩分别通过 8、7、8 项事实检查，三个负例均被正确拒绝，测试耗时 54.46 秒；
@@ -275,13 +284,16 @@ minicode
 ```text
 MiniCode-go/
 ├── README.md
-├── MiniCode.md                        # 当前项目的长期记忆与约定
 ├── docs/
 │   ├── spec.md
 │   ├── plan.md
 │   ├── agent.md                       # Agent 操作规范
 │   └── tutorial.md                    # 使用教程
-└── apps/                              # Go module: github.com/MiniCode-go/minicode
+└── apps/                              # Go module 与本项目运行工作区
+    ├── MiniCode.md                    # 常驻约定、常用命令与按需索引
+    ├── .minicode/                    # 本地数据，Git 忽略
+    │   ├── memory/                   # 按需专题详情
+    │   └── sessions/                 # 当前工作区的 Session 存档
     ├── go.mod
     ├── cmd/minicode/main.go           # 启动入口
     ├── internal/cli/                  # CLI 参数、输入与展示
@@ -312,8 +324,9 @@ MiniCode-go/
     │   ├── compact.go                  # 近期消息保留、完整序列化与分块摘要
     │   ├── state.go                    # 独立检查点、保留边界与模型上下文构造
     │   └── prompt.go                   # pi 首次和更新摘要 Prompt
-    ├── internal/memory/                # MiniCode.md 读取与完整候选内容校验
-    │   └── load.go
+    ├── internal/memory/                # 常驻加载与按需详情校验
+    │   ├── load.go
+    │   └── files.go                   # 详情路径识别与完整候选内容校验
     ├── internal/token/                 # 记忆与上下文共用的 token 粗估
     │   └── estimate.go
     ├── internal/tools/                 # 工具实现 + 注册机制
@@ -333,6 +346,7 @@ MiniCode-go/
     │   └── langfuse.go
     └── test/                           # 测试文件单独目录(black-box)
         ├── cli/                       # CLI、输入、终端显示与退出测试
+        │   ├── config_test.go          # 工作区配置、旧路径兼容及 apps 记忆读取
         │   ├── stream_preview_test.go  # 实时渲染、合并刷新、回退与关闭
         │   ├── screen_terminal_test.go # 全屏、输入区、鼠标滚动、缩放、审批与退出恢复
         │   └── stream_preview_terminal_test.go # PTY 中的排版、视口与尺寸变化
@@ -343,9 +357,11 @@ MiniCode-go/
         │   ├── compact_test.go         # 自动压缩、超限恢复与统计
         │   ├── memory_test.go          # 加载、注入、预算、压缩与恢复
         │   ├── memory_mutation_test.go # 写入、更新、删除、审批与写后刷新
+        │   ├── memory_detail_test.go   # 按需读取、目录维护、压缩与恢复
         │   └── stream_test.go          # 自动流式调用、聚合与失败回滚
         ├── memory/
-        │   └── load_test.go            # UTF-8、大小、预算、工作区隔离与读取错误
+        │   ├── load_test.go            # UTF-8、大小、预算、工作区隔离与读取错误
+        │   └── files_test.go           # 按需详情路径范围
         ├── compaction/                 # 触发阈值、保留边界与完整摘要输入
         │   ├── trigger_test.go
         │   ├── compact_test.go
@@ -379,22 +395,25 @@ MiniCode-go/
 # 构建
 go -C apps build -o ../bin/minicode ./cmd/minicode
 
-# 准备配置：固定从启动目录的 apps/config/config.toml 读取
+# 在仓库根目录准备配置，供 apps 工作区读取 config/config.toml
 cp apps/config/config.example.toml apps/config/config.toml
 $EDITOR apps/config/config.toml
 ```
 
 ```bash
-# 启动交互模式：Enter 提交整段输入，对话上下文在当前会话内持续保留
-./bin/minicode
+# 从仓库根目录进入完整运行工作区
+cd apps
+
+# 启动交互模式：Enter 提交整段输入
+../bin/minicode
 
 # 也可通过 stdin 批量输入；EOF 后退出
-printf '分析这个项目\n运行测试\n' | ./bin/minicode
+printf '分析这个项目\n运行测试\n' | ../bin/minicode
 
 # /exit 和 /quit 均可结束交互会话
 ```
 
-模型配置不能通过环境变量或 CLI flag 覆盖；`apps/config/config.toml` 含有密钥且已被 Git 忽略。可选的 `[langfuse]` 配置及其敏感数据范围见上文“配置模型服务”。
+运行工作区的首选配置是 `config/config.toml`，仅缺失时兼容 `apps/config/config.toml`；两种仓库内配置位置都已被 Git 忽略。模型配置不能通过环境变量或 CLI flag 覆盖。可选的 `[langfuse]` 配置及其敏感数据范围见上文“配置模型服务”。
 
 每个 Session 启动时会注入系统 Prompt，其中包含当前工作区、文件路径边界、工具说明、先读后改、修改后验证等规则。新会话无需额外参数：MiniCode 会生成标准小写 UUID，立即在当前工作区创建 `.minicode/sessions/<id>.json`，并在每轮结束后自动更新。启动时会输出会话 ID，例如：
 
@@ -414,22 +433,25 @@ minicode --session 550e8400-e29b-41d4-a716-446655440000
 
 ### 项目长期记忆：`MiniCode.md`
 
-在启动目录的根目录维护 UTF-8 文本文件 `MiniCode.md`，用于保存项目约定、常用命令和稳定结论。同一工作区的新会话会读取它，无需恢复旧 Session；文件不存在时按没有项目记忆处理，不自动创建。
+在启动目录的根目录维护 UTF-8 文本文件 `MiniCode.md`，常驻保存关键约定、常用命令和按需资料的简短目录。同一工作区的新会话会读取它，无需恢复旧 Session；文件不存在时按没有项目记忆处理，不自动创建。本项目入口位于 `apps/MiniCode.md`，详情位于 `apps/.minicode/memory/`，从 `apps/` 启动后路径均相对于该目录。
 
 可以直接编辑文件，也可以在对话中明确要求维护记忆，例如：
 
 ```text
-> 记住：本项目使用 go -C apps test ./... 运行测试。
-> 更新项目记忆：默认测试命令改为 go -C apps test -race ./...。
+> 记住：本项目使用 go test ./... 运行测试。
+> 更新项目记忆：默认测试命令改为 go test -race ./...。
+> 把会话恢复的设计结论保存为按需记忆，并更新目录。
 > 忘记项目记忆中的默认测试命令。
 > 清空全部项目记忆。
 ```
 
-模型通过现有 `read` / `write` / `edit` 工具执行，写入和编辑沿用审批；`--yes` 自动批准。系统 Prompt 要求先读再改、保留无关内容、避免重复和冲突，仅在用户明确要求时维护记忆。当前没有 `/memory` 或 `/forget` 命令，语义去重由模型遵循提示完成。
+模型通过现有 `read` / `write` / `edit` 工具执行，写入和编辑沿用审批；`--yes` 自动批准。系统 Prompt 要求先读再改、保留无关内容、避免重复和冲突，仅在用户明确要求时维护记忆。记忆查询和维护统一使用普通对话，按用户约定不提供 `/memory`、`/forget` 专用命令。
 
-文件最多 64 KiB，原文预算最多 4,096 个本地估算 token；两项都要满足。写入和编辑在落盘前校验完整候选内容，超限不截断、不替换原文件。已有文件读取失败、UTF-8 无效、含 NUL 或超预算会阻止启动或该次任务，修正文件后重试。
+根目录文件最多 64 KiB，原文预算最多 4,096 个本地估算 token；正文和目录合计需要满足预算。详情文件同样要求合法 UTF-8、不含 NUL、最多 64 KiB，不套用常驻 token 预算。写入和编辑校验完整候选内容，失败不替换原文件；损坏的根目录记忆阻止启动或该次任务，详情错误在显式读取时作为工具错误返回。
 
-当前将整个文件作为独立参考消息常驻模型上下文，每个用户轮次和手动 `/compact` 前重新读取；成功通过 `write` / `edit` 修改根目录记忆后，在整批工具结束时刷新。清空会留下空文件，之后不再注入记忆块；会话中的旧消息和工具记录仍保留。常驻约定加按需目录的方案见 [Day 15 计划](docs/plan.md)，详细用法见 [使用教程](docs/tutorial.md#9-项目长期记忆minicodemd)。
+宿主只自动加载整个 `MiniCode.md`，每个用户轮次和手动 `/compact` 前重新读取；根目录成功写入后，在整批工具结束时刷新。模型根据目录中的名称、适用场景和路径选择 `.minicode/memory/*.md` 并调用 `read`，不会由宿主预读整库。读过的正文进入普通会话历史并参与压缩；新会话仍只先加载常驻部分和目录。
+
+保存专题时，提示模型先成功写入详情再更新目录；忘记专题时先清空详情再移除目录项，清空全部记忆时先清空目录列出的详情再清空根文件。目录选择、同步及语义去重由模型遵循提示完成，多文件修改不是一个原子事务；任一步失败应如实报告。详情属于被 Git 忽略的本地资料，删除记忆不清除旧会话消息或摘要。示例与操作流程见 [使用教程](docs/tutorial.md#按需记忆的读取与维护)。
 
 ### 上下文压缩：`/compact`
 
@@ -489,7 +511,7 @@ arguments: {"command":"go test ./..."}
 每项任务最多进行 500 轮可使用工具的模型请求。达到上限后，再请求一次不带工具的最终总结；若总结失败或为空，则输出停止说明。达到上限仍返回非零退出码。普通模型请求、最终总结和上下文摘要的输出上限均固定为 8,192 token；输出达到上限不等同于上下文超限，不因此自动增加上限。`-timeout` 默认 1 小时，覆盖模型请求、工具执行、上下文摘要和最终总结，也用于手动 `/compact`。Ctrl+C 或超时会终止当前命令进程组；单次工具输出最多保留 64 KiB，并标记截断。命令失败的输出和错误也会回传模型。
 
 ```bash
-# 从项目根目录启动（已准备 apps/config/config.toml），然后在交互界面中输入任务
+# 以下命令从仓库根目录执行；go -C apps run 使用 apps 作为工作区
 go -C apps run ./cmd/minicode
 
 # 只运行测试目录，避免显示源码包的 [no test files]
@@ -499,10 +521,10 @@ go -C apps test -count=1 ./test/...
 go -C apps test -race ./test/cli -run 'TestMiniCode_FullScreen|TestOutput|TestMiniCode_TerminalCtrlC' -count=1
 ```
 
-真实模型语义验收需显式启用，读取 `apps/config/config.toml`，以独立模型请求逐项判断摘要是否保留目标、约束和最新进度；普通 `go test` 默认跳过该测试。该验收仅在测试阶段运行。
+真实模型语义验收需显式启用，以独立模型请求逐项判断摘要是否保留目标、约束和最新进度；普通 `go test` 默认跳过该测试。测试先切换到仓库根目录，优先读取 `config/config.toml`，不存在时读取本项目通常使用的 `apps/config/config.toml`。该验收仅在测试阶段运行。
 
 ```bash
 MINICODE_TEST_LLM=1 go -C apps test ./test/compaction -run '^TestCompact_LiveSemanticAcceptance$' -count=1 -v -timeout=10m
 ```
 
-2026-10-13 使用 `gpt-5.6-sol` 运行上述测试，三轮连续压缩与保存恢复后的事实检查、三个负例全部通过，Day 14 已完成。该结果针对测试中的固定场景与当次模型配置；摘要仍是有损归纳，精确信息需结合工作区验证。Day 15 的按需索引与专用记忆命令仍未实现，生成中滚动也属于后续工作。完整验收记录见 [开发计划](docs/plan.md)。
+2026-10-13 使用 `gpt-5.6-sol` 运行上述测试，三轮连续压缩与保存恢复后的事实检查、三个负例全部通过，Day 14 已完成。该结果针对测试中的固定场景与当次模型配置；摘要仍是有损归纳，精确信息需结合工作区验证。Day 15 的按需记忆与工作区迁移已接入，真实模型的专题选择和维护验收待补；专用记忆命令不在范围内。生成中滚动仍属于后续工作，完整记录见 [开发计划](docs/plan.md)。

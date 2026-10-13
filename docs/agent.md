@@ -15,7 +15,11 @@
 ## 2. 项目布局
 
 ```text
-apps/                                # Go module 根(不是仓库根)
+apps/                                # Go module 根与本项目完整运行工作区
+├── MiniCode.md                      # 常驻约定、常用命令与按需目录
+├── .minicode/                       # 本地数据，Git 忽略
+│   ├── memory/                      # 模型按任务 read 的专题详情
+│   └── sessions/                    # 本工作区的会话存档
 ├── cmd/minicode/main.go             # CLI 入口
 ├── internal/cli/                    # CLI 参数、输入、终端展示和 Markdown 渲染
 │   ├── run.go                       # 配置、信号与会话组装
@@ -32,12 +36,12 @@ apps/                                # Go module 根(不是仓库根)
 │   ├── compact.go                   # 三个压缩入口、预算重置与超限恢复
 │   ├── memory.go                    # 项目记忆重新加载与写后刷新识别
 │   └── output.go / approval.go      # 展示、统计、流式预览与审批接口
-├── internal/config/                 # 固定路径 TOML 配置读取与校验
+├── internal/config/                 # 工作区 TOML 配置与旧路径兼容
 ├── internal/session/                # 会话快照校验、读取与原子保存
 ├── internal/compaction/             # 固定上下文预算、近期原文保留与 LLM 摘要
 │   └── trigger.go / compact.go / state.go / prompt.go
-├── internal/memory/                 # 根目录 MiniCode.md 读取与候选内容校验
-│   └── load.go
+├── internal/memory/                 # 常驻加载与按需详情校验
+│   └── load.go / files.go
 ├── internal/token/                  # 记忆与上下文共用的 token 粗估
 │   └── estimate.go
 ├── internal/tools/                  # 工具实现 + 注册机制
@@ -64,7 +68,7 @@ apps/                                # Go module 根(不是仓库根)
 - 后续 Day:源码 `apps/internal/<name>/`,测试 `apps/test/<name>/`,同名目录
 - 测试文件名与被测源文件同名对应；工具实现与注册机制位于 `apps/internal/tools/`
 - `internal/` 不依赖 `cmd/`；第三方渲染与终端依赖集中在 `internal/cli/`，`provider` 和 `agent` 使用 OpenTelemetry 进行追踪
-- go 命令全部 `go -C apps build/test/vet ./...`
+- 仓库根目录执行 `go -C apps build/test/vet ./...`；进入 `apps/` 后使用普通 `go build/test/vet ./...`。运行本项目 CLI 时以 `apps/` 为工作区，源码位置的 `apps/` 前缀用于仓库相对路径。
 
 ## 3. 编码风格
 
@@ -94,7 +98,7 @@ apps/                                # Go module 根(不是仓库根)
 
 - **Provider 协议 = OpenAI 兼容**(`/chat/completions`、Bearer、application/json)。兼容该协议的模型服务可复用同一客户端，通过地址、密钥和模型名切换。
 - **API 错误格式兼容**:OpenAI 嵌套 `{"error": {...}}` 与平铺均可解析，非 JSON HTTP 错误也统一返回带状态码的 `APIError`
-- **当前配置（2026-10-10 调整）**：CLI 只读取启动目录下固定路径 `apps/config/config.toml`；模型字段 `api_key`、`base_url`、`name` 必填，`provider` 可选且默认为 `"openai"`，Langfuse 配置可选。旧 `.env`、配置环境变量和模型配置 flag 已移除，配置示例见 `README.md` 和 `tutorial.md`
+- **当前配置（2026-10-13 调整）**：CLI 优先读取启动目录内 `config/config.toml`，仅文件名确实不存在时兼容旧路径 `apps/config/config.toml`；首选文件不可读、是目录、符号链接断开、解析失败或缺少必填字段时不回退。模型字段 `api_key`、`base_url`、`name` 必填，`provider` 可选且默认为 `"openai"`，Langfuse 配置可选。旧 `.env`、配置环境变量和模型配置 flag 已移除，配置示例见 `README.md` 和 `tutorial.md`。
 - **配置校验**：使用严格 TOML 解析，拒绝未知字段；解析错误不回显可能含密钥的原始配置行
 - **目录布局 = `apps/`**:monorepo-friendly。本次实施观察到 `go mod tidy` 后目录被外部自动化从根 cmd/ internal/ 重组为 apps/,agent 接受,后续发现再改动先停下报告
 
@@ -207,22 +211,25 @@ apps/                                # Go module 根(不是仓库根)
 - **压缩与存档**：压缩前验证完整原始历史，候选检查点和其模型上下文通过校验后才提交；Session 保存和恢复复用公共协议校验，单独保留存档禁止 system 消息的规则。
 - **流程回归**：`semantic_test.go` 连续三次实际压缩并保存恢复，覆盖测试失败、修复后通过、再次修改尚未复测。Fake Provider 验证事实输入、旧摘要传递和最终检查点用于 Agent 续接；路径、命令和当前错误做准确原文检查。
 - **语义验收**：`semantic_live_test.go` 使用真实模型生成摘要，并用同一配置模型的独立请求逐项验收目标、约束和最新进度。肯定结论必须引用摘要原文；加入遗漏目标、约束反转和过时状态的负例。本地测试拒绝缺项、重复 ID、无依据证据、无效 JSON 及截断回复。
-- **启用方式**：普通 `go test` 默认跳过真实模型验收，显式设置 `MINICODE_TEST_LLM=1` 后读取 `apps/config/config.toml`；该环境变量只用于测试。命令见 `docs/spec.md` 的连续压缩语义验收小节。
+- **启用方式**：普通 `go test` 默认跳过真实模型验收，显式设置 `MINICODE_TEST_LLM=1` 后，测试先切换到仓库根目录，按首选与旧路径规则加载配置；该环境变量只用于测试。命令见 `docs/spec.md` 的连续压缩语义验收小节。
 - **验证状态**：本地回归、全量 race 测试与 `go vet` 已通过；2026-10-13 使用配置模型 `gpt-5.6-sol` 完成三轮连续压缩，分别通过 8、7、8 项事实验收，三个语义负例均被正确拒绝，验收耗时 54.46 秒，Day 14 已完成。请求未显式设置思考强度。固定场景通过不等于任意摘要都能完整保留事实，真实任务仍应按需重读文件。
 - **源码与测试**：`apps/internal/provider/messages.go`、`apps/internal/agent/compact.go`、`stream.go`、`apps/internal/compaction/compact.go`，以及 `apps/test/provider/messages_test.go`、`apps/test/compaction/semantic_test.go`、`semantic_live_test.go` 和现有 Agent、Session 回归。
 
 ### Day 15 项目长期记忆（2026-10-13）
 
-- **文件来源**：读取工作区根目录的 `MiniCode.md`，不扫描父目录或全局文件。仅文件名确实不存在时按无记忆处理，不自动创建；已有空文件不注入。不使用 `.minicode/memory.json`、条目 ID 或新存储框架。
+- **文件来源**：读取工作区根目录的 `MiniCode.md`，不扫描父目录、子目录或全局文件。本项目入口为 `apps/MiniCode.md`，运行工作区为 `apps/`；记忆加载器保持通用，不硬编码 apps。仅文件名确实不存在时按无记忆处理，不自动创建；已有空文件不注入。不使用 `.minicode/memory.json`、条目 ID 或新存储框架。
 - **内容校验**：`memory.Load` 负责工作区、普通文件和有界读取，`memory.NewDocument` 共用 UTF-8、NUL、64 KiB 大小及 4,096 token 原文预算检查。超限或格式错误返回失败，不截断；`internal/token.EstimateText` 提供共享粗估，消息包装另计入整体预算。
 - **加载时机**：Session 新建与恢复时、每个用户轮次追加输入前、手动 `/compact` 前重新读取。重新加载先清除旧缓存，已有文件不可读或非法时返回错误，不能继续使用过时记忆。
 - **上下文边界**：整文件作为带 `<project-memory>` 标记的独立 user 参考消息，位于系统 Prompt 后、摘要及近期原文前；说明系统规则和本次明确要求的优先级。缓存独立于原始历史与检查点，不新增 Session v2 字段，不将自动注入块送入摘要，每次请求最多构造一份。
 - **维护授权**：系统 Prompt 要求仅在用户明确请求时写入、更新或删除，只保存稳定知识，先读取完整文件、保留无关内容、避免重复和冲突，删除后未经重新授权不从历史写回。临时进度归 Session，不保存敏感信息；上述语义约定由模型遵循，不宣称已有宿主意图识别或逐项语义校验。
-- **最小工具改动**：复用 `read` / `write` / `edit` 和审批。规范化路径为根目录 `MiniCode.md` 时，`write` 与 `edit` 仅增加完整候选内容校验，沿用原子写入。`edit` 保留先读或先写、唯一匹配和外部变更检查；`write` 保留直接完整覆盖语义，先读再写是 Prompt 要求，不引入通用文件版本抽象。
+- **按需索引**：根目录常驻关键约定、常用命令和名称/适用场景/路径组成的 Markdown 目录；正文保存在 `.minicode/memory/*.md`。模型依据任务用 `read` 读取相关详情，宿主不解析目录、扫描整库或自动检索。已读正文是普通工具结果，参与历史、存档和压缩；恢复后需要精确信息时重新读取当前文件。
+- **最小工具改动**：复用 `read` / `write` / `edit` 和审批。`memory.ValidateFile` 对根目录委托 `NewDocument` 检查完整候选与常驻预算，对详情检查 UTF-8、NUL 和 64 KiB 上限，不套用常驻 4,096 token 限制。`read` 仅对显式选择的详情增加检查；相邻目录和非 Markdown 文件沿用普通规则。写入继续原子替换，`edit` 保留先读或先写、唯一匹配和外部变更检查；`write` 保留直接完整覆盖语义，先读再写是 Prompt 要求。
+- **目录维护**：提示模型先成功保存详情再更新根目录项，关键约束保留常驻；忘记专题先清空正文再移除目录项。各文件分别原子写入，不提供多文件事务；选择、同步、去重和失败报告由模型遵循提示执行，不宣称宿主已实现确定性语义判断。
 - **写后刷新**：成功的根目录 `write` / `edit` 标记需要刷新，整批工具结果完整配对后重新读取，再发送下一次请求。拒绝或失败不触发刷新；刷新失败保留已完成的工具历史并返回错误。没有为 shell 修改、符号链接别名或其他间接路径新增检测，下个用户轮次仍会重新加载。
-- **删除范围**：删除指定内容使用 `edit` 空替换，清空使用 `write` 空内容，留下空文件。之后不再注入已删除的记忆原文；原始对话、工具结果及旧摘要可以继续包含历史内容，不把清空记忆解释为清除会话存档。
-- **后续边界**：当前整文件常驻，没有自动选择条目、索引或 `/memory`、`/forget` 命令。常驻约定与简短目录加按需详情的方案记录在 `docs/plan.md`；未创建该目录，也未引入向量数据库。
-- **验证**：`apps/test/memory/load_test.go`、`apps/test/agent/memory_test.go`、`memory_mutation_test.go` 和 `apps/test/tools/memory_test.go` 覆盖加载、预算、维护、审批、失败、批次刷新、连续压缩与恢复；全量 race 测试、`go vet` 和编译已通过。Fake Provider 验证宿主流程，实际模型遵循提示仍需真实任务验证。
+- **删除范围**：删除指定内容使用 `edit` 空替换；清空全部记忆先清空目录列出的详情，再清空根目录文件，留下空文件。原始对话、工具结果及旧摘要可以继续包含历史内容，不把清空记忆解释为清除会话存档。
+- **工作区与本地数据**：四个专题已放入 `apps/.minicode/memory/`，根目录与 apps 下的 `.minicode/` 均被 Git 忽略。记忆迁移不搬迁旧 Session，也不自动切换工作区；从 apps 启动只读该目录内记忆与存档。
+- **范围**：按用户约定不提供 `/memory`、`/forget`，记忆查询和维护统一走普通对话与现有工具。没有自动扫描、关键词或向量索引；Day 15 核心流程已接入，仍待真实模型验收。
+- **验证**：`apps/test/memory/load_test.go`、`files_test.go`、`apps/test/agent/memory_test.go`、`memory_mutation_test.go`、`memory_detail_test.go`、`apps/test/tools/memory_test.go` 和 `apps/test/cli/config_test.go` 覆盖常驻/详情校验、按需读取、维护、压缩恢复、apps 启动及配置优先级与错误不回退；全量 race 测试、`go vet` 和编译通过。Fake Provider 验证宿主流程，真实模型的专题选择、去重、冲突更新和删除仍待验证。
 
 ## 6. 已知陷阱
 

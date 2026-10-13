@@ -2,7 +2,7 @@
 
 > 目标：用 Go 实现一个面向学习的迷你版 Pi。  
 > 交互方式：CLI 优先。  
-> 当前状态：Day 0～Day 14 已完成，真实模型三轮压缩验收和三个负例均通过；Day 15 已接入 MiniCode.md 加载、上下文注入和文件工具维护，按需索引与专用记忆命令尚未实现。CLI 已支持全屏会话、固定底部输入区和等待输入时的鼠标滚动。
+> 当前状态：Day 0～Day 14 已完成，真实模型三轮压缩验收和三个负例均通过；Day 15 已接入常驻记忆、按需目录与详情、文件工具维护及 apps 工作区布局，真实模型的选择与维护验收待补。记忆统一通过普通对话维护，专用命令不在范围内。CLI 已支持全屏会话、固定底部输入区和等待输入时的鼠标滚动。
 
 ## 状态标记
 
@@ -27,7 +27,7 @@ Day 18        运行观测：Session 时间线 + Agent 执行图 + 效率分析�
 
 Day 0～Day 14 仍作为单 Agent 的 v0.1 路线；项目记忆、Subagent 与运行观测增强安排在其后的扩展阶段，不作为 v0.1 的验收条件。主 Agent 接收用户任务，把适合独立分析的部分交给子 Agent，再根据返回结果继续执行。
 
-项目记忆放在 Day 15：此前已具备 Session 存储、上下文预算与合法压缩，便于控制记忆注入的大小和位置；随后 Subagent 可以复用项目知识。当前使用工作区根目录的 `MiniCode.md` 和现有文件工具，先完成跨会话保存、读取、更新、删除的闭环；按任务选择详情作为后续扩展。
+项目记忆放在 Day 15：此前已具备 Session 存储、上下文预算与合法压缩，便于控制记忆注入的大小和位置；随后 Subagent 可以复用项目知识。当前使用工作区根目录的 `MiniCode.md` 和现有文件工具完成跨会话保存、读取、更新、删除，并通过简短目录按任务读取专题详情。本项目从 `apps/` 启动，记忆入口为 `apps/MiniCode.md`。
 
 后续范围聚焦 MiniCode 本身的执行、工具、上下文、会话恢复、项目记忆、Subagent 和运行诊断。开发验证沿用本项目的自动化测试，并将 MiniCode 自身的典型失败补充为回归用例。
 
@@ -39,7 +39,7 @@ Day 0～Day 14 仍作为单 Agent 的 v0.1 路线；项目记忆、Subagent 与�
 | --- | --- | --- |
 | Session（Day 9 已完成） | 完整原始消息及独立压缩检查点（v2）；系统 Prompt 恢复时重建 | 用 `--session <id>` 继续同一个会话 |
 | 上下文压缩（Day 13～Day 14 已完成） | 当前会话中较早的历史与任务进度 | 固定保留最近约 20k token，旧历史生成滚动摘要；连续压缩的真实模型验收已通过 |
-| 项目记忆（Day 15 已接入部分） | 用户明确要求保存的稳定项目约定、常用命令和结论 | 同一工作区的新会话读取整个 MiniCode.md，无需恢复旧 Session；按需详情尚未实现 |
+| 项目记忆（Day 15 核心已接入，待真实模型验收） | 用户明确要求保存的稳定约定、常用命令、专题目录与详情 | 新会话先读取整个 MiniCode.md，模型再按任务用 read 读取详情，无需恢复旧 Session |
 
 > 当前已完成：Day 0（规划）、Day 1（模型调用）、Day 2（工具协议）、Day 3（Agent Loop）、Day 4（内置工具与注册表）、Day 5（系统 Prompt 与交互会话）、Day 6（资源控制与执行审批）、Day 7（中断与取消）、Day 8（Token 统计与过程可视化）、Day 9（Session 持久化与恢复）、Day 10（Provider 抽象）、Day 11（SSE 流式解析与终端预览）、Day 12（工具分片校验与流式 Markdown 渲染）、Day 13（上下文预算、压缩触发与 LLM 摘要）、Day 14（合法切分、严格消息校验与真实模型语义验收）。
 
@@ -47,7 +47,9 @@ Day 0～Day 14 仍作为单 Agent 的 v0.1 路线；项目记忆、Subagent 与�
 
 2026-10-13 接入全屏会话与鼠标滚动：会话共用一个备用屏幕，输入区固定底部，回复、工具状态、审批、统计和错误统一显示在会话区；窗口变化重新排版，退出恢复原屏幕及终端模式。等待输入或审批时支持滚轮、触控板与 PageUp/PageDown，兼容 SGR/X10 鼠标报告，滚动及点击不改动草稿。对应提交为 `090c640`、`410863e`；全屏实现后的全量 race 测试、滚动修复后的 CLI 全量 race 测试、`go vet` 和编译已通过。生成中滚动仍未实现，后续需统一持续接收终端事件并处理自动跟随。
 
-2026-10-13 接入 Day 15：新增 `MiniCode.md` 读取与完整内容校验，复用 `internal/token` 粗估预算；Session 独立加载记忆、加入主对话上下文并在压缩后保留。通过现有 `read` / `write` / `edit` 和审批维护文件，根目录记忆写入前校验完整候选内容，整批工具完成后刷新。临时工作区、Fake Provider 和文件工具回归覆盖加载、维护、隔离、预算、连续压缩与恢复；全量 race 测试、`go vet` 和编译已通过。对应提交为 `90e0399`、`bc6a5d1`。当前整文件常驻，按需索引与专用命令未实现，Day 15 保持 🔄。
+2026-10-13 接入按需记忆并迁移工作区：`MiniCode.md` 常驻关键约定和 Markdown 目录，模型按适用场景调用 `read` 读取 `.minicode/memory/*.md`；详情共用 UTF-8、NUL 和 64 KiB 校验，不套用常驻 token 预算。入口移到 `apps/MiniCode.md`，四个本地专题位于 `apps/.minicode/memory/`；配置优先读取工作区内 `config/config.toml`，仅缺失时兼容旧路径。专题读取、创建/更新/忘记、压缩恢复及 apps 启动测试通过，全量 race 测试、`go vet` 和编译通过，对应提交为 `9e9a857`。按用户约定不实现专用记忆命令，Day 15 仅剩真实模型验收，保持 🔄。
+
+2026-10-13 初步接入 Day 15：新增 `MiniCode.md` 读取与完整内容校验，复用 `internal/token` 粗估预算；Session 独立加载记忆、加入主对话上下文并在压缩后保留。通过现有 `read` / `write` / `edit` 和审批维护文件，根目录记忆写入前校验完整候选内容，整批工具完成后刷新。临时工作区、Fake Provider 和文件工具回归覆盖加载、维护、隔离、预算、连续压缩与恢复；全量 race 测试、`go vet` 和编译已通过。对应提交为 `90e0399`、`bc6a5d1`；当时仅整文件常驻，按需能力与工作区迁移已在后续提交中接入。
 
 2026-10-13 补充 Day 14 实现：将消息序列校验统一到 `provider.ValidateMessages`，覆盖 Agent、流式与非流式请求、压缩前后和 Session 存档。加入三次连续压缩的事实输入、保存恢复和续接测试，以及显式启用的真实模型逐项语义验收和负例。本地回归、全量 race 测试及 `go vet` 已通过。早期两次真实模型请求均遇到上游 `do_request_failed`，当时尚未进入语义判定；后续成功结果见上述完成记录。对应提交为 `bd53507`、`1532161`。
 
@@ -110,7 +112,7 @@ Day 0～Day 14 仍作为单 Agent 的 v0.1 路线；项目记忆、Subagent 与�
 - ✅ 处理鉴权（`Authorization: Bearer`）和基础错误（APIError + 通用 http 错误）；
 - ✅ 完成一次用户输入到模型文本输出的调用（`cmd/minicode/main.go`）；
 - ✅ 兼容 OpenAI 风格的嵌套错误格式 `{"error": {...}}` 与平铺格式；
-- ✅ 入口当前统一从启动目录下的 `apps/config/config.toml` 读取模型配置；旧版 flag 与 `MINICODE_*` 环境变量已移除；
+- ✅ 入口优先从启动目录的 `config/config.toml` 读取模型配置，仅文件名确实不存在时兼容旧路径 `apps/config/config.toml`；旧版 flag 与 `MINICODE_*` 环境变量已移除；
 - ✅ `httptest` 覆盖：成功、模型覆盖、API 错误、嵌套错误、非 JSON 错误、context 取消、入参校验、URL 斜杠归一。
 
 ### 产出
@@ -538,7 +540,7 @@ CLI 在生成过程中持续展示 Markdown 排版，结束后在会话区保留
 
 三轮均实际推进压缩边界，并完成保存、恢复和模型上下文检查。验收没有显式设置 `reasoning_effort`，采用服务端默认值。早期两次请求曾在首次摘要时遇到上游 `do_request_failed`；本次已获得完整通过结果，Day 14 标为 ✅。该结果对应固定测试场景和当次模型配置，后续更换模型或修改摘要流程时可重新验收。
 
-从仓库根目录运行，读取现有 `apps/config/config.toml`：
+从仓库根目录运行；测试先切换到仓库根目录，优先读取 `config/config.toml`，不存在时读取本项目通常使用的 `apps/config/config.toml`：
 
 ```bash
 MINICODE_TEST_LLM=1 go -C apps test ./test/compaction -run '^TestCompact_LiveSemanticAcceptance$' -count=1 -v -timeout=10m
@@ -560,7 +562,7 @@ MINICODE_TEST_LLM=1 go -C apps test ./test/compaction -run '^TestCompact_LiveSem
 
 ### 已实现
 
-- ✅ 使用当前工作区根目录的 UTF-8 文件 `MiniCode.md` 保存项目记忆；不扫描父目录或全局目录，不使用 JSON 条目库；文件不存在或为空时不注入，不自动创建；
+- ✅ 使用当前工作区根目录的 UTF-8 文件 `MiniCode.md` 保存常驻记忆与目录；本项目工作区为 `apps/`，入口为 `apps/MiniCode.md`。不扫描父目录或全局目录，不使用 JSON 条目库；文件不存在或为空时不注入，不自动创建；
 - ✅ `memory.Load` 与 `memory.NewDocument` 共用完整内容校验：最多 64 KiB、不含 NUL、原文最多 4,096 个本地估算 token；读取还检查普通文件与工作区路径边界，失败明确返回，不截断；
 - ✅ 新建和恢复 Session 时读取当前文件，每个用户轮次和手动 `/compact` 前重新读取；模型上下文为“系统 Prompt → 项目记忆（如有）→ 摘要（如有）→ 近期原文”；
 - ✅ 项目记忆以带 `<project-memory>` 标记的独立 user 消息加入请求，提示模型按系统规则和本次用户要求处理冲突；正文与包装计入整体上下文预算；
@@ -568,40 +570,45 @@ MINICODE_TEST_LLM=1 go -C apps test ./test/compaction -run '^TestCompact_LiveSem
 - ✅ 复用现有 `read` / `write` / `edit` 与审批完成创建、更新、删除指定内容和清空。清空使用空内容覆盖，留下空文件；成功修改规范化路径为根目录 `MiniCode.md` 的文件后，整批工具结果完成再刷新；
 - ✅ `write` 和 `edit` 对根目录记忆的完整候选内容做落盘前校验，失败保留原文件；未新增工具、条目 ID 或通用文件版本机制；
 - ✅ 系统 Prompt 要求只有用户明确提出记忆维护时才写入，先读取并保留无关内容，避免重复、替换冲突约定，删除后未经重新授权不从历史写回；这些语义规则由模型遵循提示，宿主未实现逐条语义去重或意图判定；
+- ✅ 按需详情放在 `.minicode/memory/*.md`，目录项包含名称、适用场景和相对路径。模型根据任务选择 `read`，宿主不扫描或预读全部详情；读过的正文进入普通工具历史和压缩；
+- ✅ `memory.ValidateFile` 校验根目录完整候选及详情内容，`read` / `write` / `edit` 对详情共用 UTF-8、NUL 和 64 KiB 限制；详情不套用常驻 4,096 token 预算。提示模型先保存详情再更新目录，忘记专题先清空正文再移除目录项；
+- ✅ 索引已建立代码组织、会话与上下文压缩、项目记忆、终端交互四个专题，位于 `apps/.minicode/memory/`；该目录继续由 Git 忽略，作为本地资料；
+- ✅ 支持从 `apps/` 启动：配置优先读取 `config/config.toml`，仅缺失时兼容旧路径，首选文件损坏或不可读不回退；不硬编码记忆工作区，也不移动原工作区的 Session；
 - ✅ 临时工作区与 Fake Provider 测试覆盖跨会话加载、项目隔离、预算、缺失与空文件、创建/更新/删除/清空、审批拒绝、失败写入、整批工具后刷新，以及连续压缩和恢复。
 
 ### 验证状态与剩余工作
 
-上述加载、维护和上下文流程已有本地回归，全量 race 测试、`go vet` 和编译已通过。Fake Provider 固定工具调用和模型回复，用于验证宿主流程；实际模型是否遵循记忆维护提示仍需真实任务验证。
+上述加载、维护和按需流程已有本地回归，2026-10-13 全量 race 测试、`go vet` 和编译通过。新增测试覆盖未读取详情不注入、无关超限或缺失文件不阻断启动、已读正文参加压缩、恢复后重读当前详情、专题与目录的维护，以及 apps 工作区启动和配置回退。Fake Provider 固定工具调用和模型回复，用于验证宿主流程；实际模型是否选对专题并遵循维护提示仍需真实任务验证。
 
-读取到损坏、不可读或超预算的已有记忆时，启动或当前任务返回错误；不会跳过错误继续使用旧缓存。写入候选内容校验失败作为工具错误回传，模型可以修正重试；整批工具完成后的刷新失败保留已完成的工具历史并停止该次任务。
+读取到损坏、不可读或超预算的根目录记忆时，启动或当前任务返回错误；不会跳过错误继续使用旧缓存。详情仅在显式 `read` 时返回读取错误，未选择的详情不影响启动。写入候选校验失败作为工具错误回传，模型可以修正重试；整批工具完成后的根目录刷新失败保留已完成历史并停止该次任务。
 
-待实现内容：
+待验收内容：
 
-- ⬜ 建立“常驻约定 + 简短目录 + 按需详情”的文件约定，验证模型按任务选择详情，避免所有知识整库常驻；
-- ⬜ 评估并实现专用查询、删除入口；当前没有 `/memory` 或 `/forget`，可通过普通对话要求模型读取或维护文件；
+- ⬜ 用真实模型验证按适用场景选择详情，相关任务能读取，无关任务无需读取，读取失败时不凭目录猜测正文；
 - ⬜ 用真实模型验证明确保存、冲突更新、避免重复和删除后不重新写回；关键命令与结论仍结合当前工作区验证。
 
-### 常驻与按需记忆的后续方案（未实施）
+按用户约定，查询和维护统一走普通对话与现有文件工具，`/memory`、`/forget` 不属于待实现项。
+
+### 常驻与按需记忆（已接入）
 
 参考 pi 的两种资源加载方式：项目上下文文件正文进入系统 Prompt；Skills 启动时只提供名称、描述和路径，模型在任务需要时读取全文。这里借鉴其加载方式设计项目记忆，不将 Skills 等同于长期记忆条目库。来源见 [pi 系统 Prompt 实现](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/system-prompt.ts) 和 [pi Skills 加载说明](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md)。
 
-拟先采用手工 Markdown 目录，复用现有 `read`，不新增索引数据库：
+采用普通 Markdown 目录，复用现有 `read`，不新增索引数据库；下面是相对工作区的路径，本项目实际位于 `apps/` 下：
 
 | 位置 | 内容 | 加载方式 |
 | --- | --- | --- |
 | 根目录 `MiniCode.md` | 关键约束、常用命令，以及详情的名称、适用场景和路径 | 整文件常驻，目录也受 4,096 token 原文预算约束 |
 | `.minicode/memory/<topic>.md` | Session、压缩等专题的详细结论 | 模型按任务选择，再用 `read` 读取 |
 
-只在同一个 `MiniCode.md` 内标注“常驻”和“选择性”不会减少注入量；需要将详情正文放到独立文件中。模型可能漏读目录，因此关键约束仍放常驻部分，用户也可明确要求读取指定文件。当前 `.minicode/` 被 Git 忽略，采用该位置的详情默认为本地资料；需要随仓库共享时另行确定位置。上述目录和选择流程尚未建立，也未实现自动索引、关键词匹配或向量检索。
+只在同一个 `MiniCode.md` 内标注“常驻”和“选择性”不会减少注入量；详情正文已放在独立文件中。模型可能漏读目录，因此关键约束仍放常驻部分，用户也可明确要求读取指定文件。目录选择、去重和同步由模型遵循提示完成，多文件修改不是一个原子事务。根目录与 `apps/` 下的 `.minicode/` 均被 Git 忽略，详情是本地资料；需要随仓库共享时另行确定位置。当前没有自动扫描、关键词匹配或向量检索。
 
 ### 产出
 
-实现见 `apps/internal/memory/load.go`、`apps/internal/token/estimate.go`、`apps/internal/agent/memory.go`、`compact.go`、`run.go`、`prompt.go`，以及 `apps/internal/tools/write.go` 和 `edit.go`。测试见 `apps/test/memory/load_test.go`、`apps/test/agent/memory_test.go`、`memory_mutation_test.go` 和 `apps/test/tools/memory_test.go`。
+实现见 `apps/internal/memory/load.go`、`files.go`、`apps/internal/token/estimate.go`、`apps/internal/agent/memory.go`、`compact.go`、`run.go`、`prompt.go`，以及 `apps/internal/tools/read.go`、`write.go`、`edit.go` 和 `apps/internal/config/config.go`。测试见 `apps/test/memory/load_test.go`、`files_test.go`、`apps/test/agent/memory_test.go`、`memory_mutation_test.go`、`memory_detail_test.go`、`apps/test/tools/memory_test.go` 和 `apps/test/cli/config_test.go`。
 
 ```text
-会话 A：用户明确要求记住 → 读取现有文件 → 审批 → 校验候选内容并落盘 → 刷新记忆
-会话 B：加载当前 MiniCode.md → 提出新任务 → 结合项目状态执行并验证
+会话 A：用户要求保存专题 → 读取现有文件 → 审批并保存详情 → 更新目录 → 刷新常驻记忆
+会话 B：加载 MiniCode.md → 根据当前任务选择目录项 → read 对应详情 → 结合项目状态执行并验证
 ```
 
 项目记忆复用稳定知识；任务续接使用 Session 保存的原始历史和检查点，长对话的长度控制由上下文压缩负责。删除或清空项目记忆不会清除旧会话中的用户消息、工具结果或摘要。
@@ -739,7 +746,7 @@ MINICODE_TEST_LLM=1 go -C apps test ./test/compaction -run '^TestCompact_LiveSem
 - ✅ 上下文压缩（固定保留约 20k token、pi 摘要模板、完整输入与分块处理、三个触发入口）；
 - ✅ 压缩切分合法性与严格发送前消息校验（Day 14）；
 - ✅ 关键上下文保留验收（Day 14，本地流程测试、真实模型三轮逐项验收和三个负例已通过）；
-- 🔄 跨会话项目记忆（Day 15，MiniCode.md 加载、注入、维护与写后刷新已接入；按需索引和专用命令未实现）；
+- 🔄 跨会话项目记忆（Day 15，常驻与按需流程、维护、写后刷新及 apps 工作区布局已接入；待真实模型选择与维护验收，专用命令不在范围内）；
 - ⬜ Subagent 任务委派与独立上下文（Day 16，v0.1 之后）；
 - ⬜ Subagent 并行调度、过程展示与恢复（Day 17，v0.1 之后）；
 - ⬜ Session 时间线、Agent 执行图、效率分析与失败诊断（Day 18，v0.1 之后）。
