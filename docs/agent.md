@@ -27,11 +27,16 @@ apps/                                # Go module 根(不是仓库根)
 │   ├── run.go / prompt.go           # 会话、任务循环与系统 Prompt
 │   ├── stream.go                    # 自动选择流式能力、聚合文本与工具参数
 │   ├── compact.go                   # 三个压缩入口、预算重置与超限恢复
+│   ├── memory.go                    # 项目记忆重新加载与写后刷新识别
 │   └── output.go / approval.go      # 展示、统计、流式预览与审批接口
 ├── internal/config/                 # 固定路径 TOML 配置读取与校验
 ├── internal/session/                # 会话快照校验、读取与原子保存
 ├── internal/compaction/             # 固定上下文预算、近期原文保留与 LLM 摘要
 │   └── trigger.go / compact.go / state.go / prompt.go
+├── internal/memory/                 # 根目录 MiniCode.md 读取与候选内容校验
+│   └── load.go
+├── internal/token/                  # 记忆与上下文共用的 token 粗估
+│   └── estimate.go
 ├── internal/tools/                  # 工具实现 + 注册机制
 │   ├── registry.go                  # Tool、ToolRegistry、参数公共校验
 │   ├── bash.go                      # RunBash + execute*Tool + build*Tool
@@ -46,8 +51,9 @@ apps/                                # Go module 根(不是仓库根)
 ├── internal/telemetry/              # OpenTelemetry / Langfuse 追踪配置
 └── test/                            # 测试单独目录,black-box
     ├── cli/                        # CLI、输入、终端显示与退出
-    ├── agent/                      # Agent、流式聚合、错误回传与持久化
+    ├── agent/                      # Agent、流式聚合、持久化、记忆加载与维护
     ├── compaction/                 # 预算、分块、保留边界、连续压缩与语义验收
+    ├── memory/                     # UTF-8、文件大小、预算、隔离与读取错误
     ├── tools/                      # 工具行为与取消
     └── provider/                   # 模型协议、SSE、取消与追踪
 ```
@@ -190,6 +196,19 @@ apps/                                # Go module 根(不是仓库根)
 - **启用方式**：普通 `go test` 默认跳过真实模型验收，显式设置 `MINICODE_TEST_LLM=1` 后读取 `apps/config/config.toml`；该环境变量只用于测试。命令见 `docs/spec.md` 的连续压缩语义验收小节。
 - **验证状态**：本地回归、全量 race 测试与 `go vet` 已通过；两次真实模型验收均在首次摘要请求遇到上游 `do_request_failed`，尚未进入语义判定。Day 14 保持进行中，服务恢复后需完成三轮逐项验收和三个负例。
 - **源码与测试**：`apps/internal/provider/messages.go`、`apps/internal/agent/compact.go`、`stream.go`、`apps/internal/compaction/compact.go`，以及 `apps/test/provider/messages_test.go`、`apps/test/compaction/semantic_test.go`、`semantic_live_test.go` 和现有 Agent、Session 回归。
+
+### Day 15 项目长期记忆（2026-10-13）
+
+- **文件来源**：读取工作区根目录的 `MiniCode.md`，不扫描父目录或全局文件。仅文件名确实不存在时按无记忆处理，不自动创建；已有空文件不注入。不使用 `.minicode/memory.json`、条目 ID 或新存储框架。
+- **内容校验**：`memory.Load` 负责工作区、普通文件和有界读取，`memory.NewDocument` 共用 UTF-8、NUL、64 KiB 大小及 4,096 token 原文预算检查。超限或格式错误返回失败，不截断；`internal/token.EstimateText` 提供共享粗估，消息包装另计入整体预算。
+- **加载时机**：Session 新建与恢复时、每个用户轮次追加输入前、手动 `/compact` 前重新读取。重新加载先清除旧缓存，已有文件不可读或非法时返回错误，不能继续使用过时记忆。
+- **上下文边界**：整文件作为带 `<project-memory>` 标记的独立 user 参考消息，位于系统 Prompt 后、摘要及近期原文前；说明系统规则和本次明确要求的优先级。缓存独立于原始历史与检查点，不新增 Session v2 字段，不将自动注入块送入摘要，每次请求最多构造一份。
+- **维护授权**：系统 Prompt 要求仅在用户明确请求时写入、更新或删除，只保存稳定知识，先读取完整文件、保留无关内容、避免重复和冲突，删除后未经重新授权不从历史写回。临时进度归 Session，不保存敏感信息；上述语义约定由模型遵循，不宣称已有宿主意图识别或逐项语义校验。
+- **最小工具改动**：复用 `read` / `write` / `edit` 和审批。规范化路径为根目录 `MiniCode.md` 时，`write` 与 `edit` 仅增加完整候选内容校验，沿用原子写入。`edit` 保留先读或先写、唯一匹配和外部变更检查；`write` 保留直接完整覆盖语义，先读再写是 Prompt 要求，不引入通用文件版本抽象。
+- **写后刷新**：成功的根目录 `write` / `edit` 标记需要刷新，整批工具结果完整配对后重新读取，再发送下一次请求。拒绝或失败不触发刷新；刷新失败保留已完成的工具历史并返回错误。没有为 shell 修改、符号链接别名或其他间接路径新增检测，下个用户轮次仍会重新加载。
+- **删除范围**：删除指定内容使用 `edit` 空替换，清空使用 `write` 空内容，留下空文件。之后不再注入已删除的记忆原文；原始对话、工具结果及旧摘要可以继续包含历史内容，不把清空记忆解释为清除会话存档。
+- **后续边界**：当前整文件常驻，没有自动选择条目、索引或 `/memory`、`/forget` 命令。常驻约定与简短目录加按需详情的方案记录在 `docs/plan.md`；未创建该目录，也未引入向量数据库。
+- **验证**：`apps/test/memory/load_test.go`、`apps/test/agent/memory_test.go`、`memory_mutation_test.go` 和 `apps/test/tools/memory_test.go` 覆盖加载、预算、维护、审批、失败、批次刷新、连续压缩与恢复；全量 race 测试、`go vet` 和编译已通过。Fake Provider 验证宿主流程，实际模型遵循提示仍需真实任务验证。
 
 ## 6. 已知陷阱
 
