@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/MiniCode-go/minicode/internal/memory"
 	"github.com/MiniCode-go/minicode/internal/provider"
 )
 
@@ -63,6 +64,11 @@ func (f *FileTools) EditFile(ctx context.Context, path, oldText, newText string,
 	updated := []byte(updatedText)
 	if err := validateText(updated); err != nil {
 		return "", fmt.Errorf("edit: %w", err)
+	}
+	if path == memory.FileName {
+		if _, err := memory.NewDocument(string(updated), memory.DefaultTokenBudget); err != nil {
+			return "", fmt.Errorf("edit: %w", err)
+		}
 	}
 	if err := fsWriteFile(ctx, f.root, path, updated, &version); err != nil {
 		return "", fmt.Errorf("edit: %w", err)

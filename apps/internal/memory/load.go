@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -81,20 +80,28 @@ func Load(ctx context.Context, workspace string, tokenBudget int) (*Document, er
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("memory: %w", err)
 	}
-	// 读取期间文件可能增长，不能只依赖 Stat 的大小。
+	// 读取期间文件可能增长，由内容校验再次检查实际大小。
+	return NewDocument(string(content), tokenBudget)
+}
+
+// NewDocument 校验完整记忆原文，供读取和写入前共用；超限时不截断。
+// tokenBudget 只覆盖原文，不包含消息包装开销。
+func NewDocument(content string, tokenBudget int) (*Document, error) {
+	if tokenBudget < 0 {
+		return nil, errors.New("memory: token budget must not be negative")
+	}
 	if len(content) > MaxFileBytes {
 		return nil, fmt.Errorf("memory: %s exceeds %d byte limit", FileName, MaxFileBytes)
 	}
-	if !utf8.Valid(content) {
+	if !utf8.ValidString(content) {
 		return nil, fmt.Errorf("memory: %s must contain valid UTF-8 text", FileName)
 	}
-	if bytes.IndexByte(content, 0) >= 0 {
+	if strings.IndexByte(content, 0) >= 0 {
 		return nil, fmt.Errorf("memory: %s must not contain NUL bytes", FileName)
 	}
-	doc := &Document{Content: string(content)}
-	doc.EstimatedTokens = token.EstimateText(doc.Content)
-	if doc.EstimatedTokens > tokenBudget {
-		return nil, fmt.Errorf("memory: %s requires approximately %d tokens, exceeds %d token budget", FileName, doc.EstimatedTokens, tokenBudget)
+	estimated := token.EstimateText(content)
+	if estimated > tokenBudget {
+		return nil, fmt.Errorf("memory: %s requires approximately %d tokens, exceeds %d token budget", FileName, estimated, tokenBudget)
 	}
-	return doc, nil
+	return &Document{Content: content, EstimatedTokens: estimated}, nil
 }

@@ -47,8 +47,11 @@ func (s *Session) contextMessages() ([]provider.Message, error) {
 		return nil, fmt.Errorf("agent: invalid compaction checkpoint: %w", err)
 	}
 	body := s.compaction.ContextMessages(s.messages[1:])
-	messages := make([]provider.Message, 0, 1+len(body))
+	messages := make([]provider.Message, 0, 2+len(body))
 	messages = append(messages, s.messages[0])
+	if s.projectMemory != "" {
+		messages = append(messages, provider.NewMessage(provider.RoleUser, projectMemoryPrefix+s.projectMemory+projectMemorySuffix, ""))
+	}
 	messages = append(messages, body...)
 	if err := provider.ValidateMessages(messages); err != nil {
 		return nil, fmt.Errorf("agent: invalid model context: %w", err)

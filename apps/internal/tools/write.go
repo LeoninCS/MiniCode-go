@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/MiniCode-go/minicode/internal/memory"
 	"github.com/MiniCode-go/minicode/internal/provider"
 )
 
@@ -23,6 +24,11 @@ func (f *FileTools) WriteFile(ctx context.Context, path, content string) (string
 	}
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("write: %w", err)
+	}
+	if path == memory.FileName {
+		if _, err := memory.NewDocument(content, memory.DefaultTokenBudget); err != nil {
+			return "", fmt.Errorf("write: %w", err)
+		}
 	}
 	if err := f.root.MkdirAll(filepath.Dir(path), dirPermissions); err != nil {
 		return "", fmt.Errorf("write: create parent directories: %w", err)

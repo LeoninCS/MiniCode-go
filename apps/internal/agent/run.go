@@ -52,11 +52,12 @@ type Session struct {
 	workspace     string
 	sessionPath   string
 	messages      []provider.Message // 系统 Prompt + 完整原始历史，压缩不改写。
+	projectMemory string             // 当前工作区记忆原文，独立于历史和压缩检查点。
 	compaction    *compaction.State
 	contextBudget compaction.TokenTrigger
 }
 
-// NewSession 打开工作区、注册内置工具,并把系统 Prompt 作为首条消息写入历史。
+// NewSession 打开工作区、注册内置工具并加载项目记忆，把系统 Prompt 写入历史。
 // bash、write、edit 执行前会调用可选的 approver；CLI 始终提供实现。
 // approver 为 nil 时直接执行工具。
 // 调用方负责在结束时调用 Close 释放工作区句柄。
@@ -85,7 +86,7 @@ func NewSession(client provider.Provider, approver ToolApprover) (*Session, erro
 		_ = files.Close()
 		return nil, err
 	}
-	return &Session{
+	s := &Session{
 		id:        uuid.NewString(),
 		client:    client,
 		tracer:    tracer,
@@ -94,7 +95,12 @@ func NewSession(client provider.Provider, approver ToolApprover) (*Session, erro
 		approver:  approver,
 		workspace: workspace,
 		messages:  []provider.Message{provider.NewMessage(provider.RoleSystem, systemPrompt(workspace), "")},
-	}, nil
+	}
+	if err := s.reloadProjectMemory(context.Background()); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 // OpenSessionByID 按 ID 恢复工作区内的存档；id 为空时创建并保存新会话。
@@ -247,7 +253,11 @@ func (s *Session) Run(ctx context.Context, output Output, initial []string, time
 				compactCtx, cancelCompact := context.WithTimeout(ctx, timeout)
 				started := time.Now()
 				stats := TaskStats{}
-				changed, err := s.compact(compactCtx, &stats)
+				changed := false
+				err := s.reloadProjectMemory(compactCtx)
+				if err == nil {
+					changed, err = s.compact(compactCtx, &stats)
+				}
 				cancelCompact()
 				if err == nil && changed {
 					err = s.save(nil)
@@ -331,6 +341,9 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 			turnErr = errors.Join(turnErr, err)
 		}
 	}()
+	if err := s.reloadProjectMemory(ctx); err != nil {
+		return err
+	}
 	s.messages = append(s.messages, provider.NewMessage(provider.RoleUser, input, ""))
 	toolDefinitions := s.registry.Definitions()
 	for turn := 0; turn < maxTurns; turn++ {
@@ -379,6 +392,7 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 			return nil
 		}
 		assistant := len(s.messages) - 1
+		memoryChanged := false
 		for _, call := range toolCalls {
 			stats.ToolCalls++
 			output.ToolStart(turnNumber, call)
@@ -428,11 +442,19 @@ func (s *Session) Turn(ctx context.Context, input string, output Output) (turnEr
 				result += "\nerror: " + err.Error()
 				toolSpan.RecordError(err)
 				toolSpan.SetStatus(codes.Error, err.Error())
+			} else if isProjectMemoryMutation(call) {
+				memoryChanged = true
 			}
 			toolSpan.SetAttributes(attribute.String("langfuse.observation.output", result))
 			toolSpan.End()
 			output.ToolDone(call.Function.Name, status, time.Since(started))
 			s.messages = append(s.messages, provider.NewMessage(provider.RoleTool, result, call.ID))
+		}
+		// 整批结果配对后再刷新；刷新失败也保留已经完成的工具历史。
+		if memoryChanged {
+			if err := s.reloadProjectMemory(ctx); err != nil {
+				return err
+			}
 		}
 	}
 	stats.ModelCalls++
