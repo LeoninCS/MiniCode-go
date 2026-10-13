@@ -20,6 +20,7 @@ type inputRow struct {
 // 但其内置重绘在真实换行叠加自动折行时会错位，因此在此统一重绘。
 type inputDisplay struct {
 	output    io.Writer
+	screen    *sessionScreen
 	prompt    string
 	cursorRow int
 	top       int
@@ -40,9 +41,17 @@ func (d *inputDisplay) size() (width, height int) {
 
 func (d *inputDisplay) layout(line []rune) []inputRow {
 	width, _ := d.size()
+	prompt := d.prompt
+	if d.screen != nil {
+		prompt = screenInputPrompt(prompt, max(1, width-1))
+	}
+	return layoutInput(line, prompt, width)
+}
+
+func layoutInput(line []rune, prompt string, width int) []inputRow {
 	// 留一列给行尾光标，避免终端的延迟自动折行与显式换行相互干扰。
 	limit := max(1, width-1)
-	column := runewidth.StringWidth(d.prompt)
+	column := runewidth.StringWidth(prompt)
 	start := 0
 	var rows []inputRow
 	for pos, r := range line {
@@ -111,6 +120,10 @@ func (d *inputDisplay) writeRows(out *strings.Builder, line []rune, rows []input
 }
 
 func (d *inputDisplay) render(line []rune, pos int) {
+	if d.screen != nil {
+		d.screen.setInput(d.prompt, string(line), pos, true)
+		return
+	}
 	rows := d.layout(line)
 	row := inputCursorRow(rows, pos)
 	_, height := d.size()

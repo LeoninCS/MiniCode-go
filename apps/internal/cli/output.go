@@ -19,6 +19,7 @@ type Output struct {
 	stdout      io.Writer
 	stderr      io.Writer
 	interactive bool
+	screen      *sessionScreen
 	streamMu    sync.Mutex
 	preview     *streamPreview
 }
@@ -33,12 +34,16 @@ func (o *Output) ModelStart(turn int) {
 	if !o.interactive {
 		return
 	}
-	_, _ = fmt.Fprintf(o.stdout, "[turn %d] waiting for model\n", turn)
+	o.write(o.stdout, fmt.Sprintf("[turn %d] waiting for model\n", turn))
 }
 
 // StreamEvent 累积文本，由备用屏幕定时渲染 Markdown；管道只输出最终回复。
 func (o *Output) StreamEvent(event provider.StreamEvent) {
 	if !o.interactive || event.Content == "" {
+		return
+	}
+	if o.screen != nil {
+		o.screen.appendStream(event.Content)
 		return
 	}
 	o.streamMu.Lock()
@@ -50,8 +55,12 @@ func (o *Output) StreamEvent(event provider.StreamEvent) {
 	}
 }
 
-// StreamDone 恢复主屏幕，成功、失败与取消都需要清除临时预览。
+// StreamDone 清除临时预览；独立预览恢复主屏幕，会话屏幕保留至退出。
 func (o *Output) StreamDone() {
+	if o.screen != nil {
+		o.screen.endStream()
+		return
+	}
 	o.streamMu.Lock()
 	defer o.streamMu.Unlock()
 	if o.preview != nil {
@@ -65,7 +74,7 @@ func (o *Output) ToolStart(turn int, call provider.ToolCall) {
 	if !o.interactive {
 		return
 	}
-	_, _ = fmt.Fprintf(o.stdout, "[turn %d] calling %s\n", turn, call.Function.Name)
+	o.write(o.stdout, fmt.Sprintf("[turn %d] calling %s\n", turn, call.Function.Name))
 }
 
 // ToolDone 展示工具终态和耗时。
@@ -73,7 +82,7 @@ func (o *Output) ToolDone(name string, status agent.ToolStatus, duration time.Du
 	if !o.interactive {
 		return
 	}
-	_, _ = fmt.Fprintf(o.stdout, "[state] %s %s in %s\n", name, status, formatDuration(duration))
+	o.write(o.stdout, fmt.Sprintf("[state] %s %s in %s\n", name, status, formatDuration(duration)))
 }
 
 func formatDuration(duration time.Duration) string {
@@ -160,18 +169,25 @@ func (o *Output) TaskDone(stats agent.TaskStats) {
 	colored = append(colored, tokenColor+parts[3]+ansiReset)
 	separator := " " + ansiDim + "｜" + ansiReset + " "
 	prefix := ansiBold + ansiCyan + "[统计]" + ansiReset + " "
-	_, _ = fmt.Fprintln(writer, prefix+strings.Join(colored, separator))
+	if o.screen != nil {
+		o.screen.addEntry(&screenEntry{content: prefix + strings.Join(colored, separator)})
+		return
+	}
+	o.write(writer, prefix+strings.Join(colored, separator)+"\n")
 }
 
 // Message 渲染并展示模型最终回复。
 func (o *Output) Message(content string) {
+	if o.screen != nil {
+		o.screen.add(content, true)
+		return
+	}
 	_, _ = fmt.Fprint(o.stdout, RenderMarkdown(o.stdout, content))
 }
 
 // ToolCall 只在等待用户审批时展示工具名称与参数。
 func (o *Output) ToolCall(call provider.ToolCall) {
-	_, _ = fmt.Fprintln(o.stdout, "tool: "+call.Function.Name)
-	_, _ = fmt.Fprintln(o.stdout, "arguments: "+call.Function.Arguments)
+	o.write(o.stdout, "tool: "+call.Function.Name+"\narguments: "+call.Function.Arguments+"\n")
 }
 
 // ToolError 展示无法继续由模型处理的任务错误，并将取消与超时映射为明确提示。
@@ -183,5 +199,13 @@ func (o *Output) ToolError(err error) {
 	case errors.Is(err, context.DeadlineExceeded):
 		message = "任务执行超时"
 	}
-	_, _ = fmt.Fprintln(o.stderr, "minicode: "+message)
+	o.write(o.stderr, "minicode: "+message+"\n")
+}
+
+func (o *Output) write(writer io.Writer, content string) {
+	if o.screen != nil {
+		o.screen.add(content, false)
+		return
+	}
+	_, _ = io.WriteString(writer, content)
 }

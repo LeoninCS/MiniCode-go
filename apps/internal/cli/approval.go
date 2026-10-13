@@ -52,7 +52,7 @@ func (a *toolApprover) Approve(ctx context.Context, content string, call provide
 		case "n", "no":
 			return false, nil
 		default:
-			_, _ = fmt.Fprintln(a.output.stderr, "请输入 y/yes 批准，或 n/no 拒绝。")
+			a.output.write(a.output.stderr, "请输入 y/yes 批准，或 n/no 拒绝。\n")
 		}
 	}
 }

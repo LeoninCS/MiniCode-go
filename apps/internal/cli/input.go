@@ -22,9 +22,10 @@ type terminalKeyReader struct {
 	input   *bufio.Reader
 	closer  io.Closer
 	pending []byte
+	scroll  func(int) bool
 }
 
-func newTerminalKeyReader(input io.ReadCloser) io.ReadCloser {
+func newTerminalKeyReader(input io.ReadCloser) *terminalKeyReader {
 	return &terminalKeyReader{input: bufio.NewReader(input), closer: input}
 }
 
@@ -65,6 +66,14 @@ func (r *terminalKeyReader) Read(p []byte) (int, error) {
 		}
 
 		switch string(r.pending) {
+		case "\x1b[5~", "\x1b[6~":
+			direction := 1
+			if string(r.pending) == "\x1b[6~" {
+				direction = -1
+			}
+			if r.scroll != nil && r.scroll(direction) {
+				r.pending = r.pending[:0]
+			}
 		case "\x1b[13;2u", "\x1b[27;2;13~", "\x1b[13;2~", "\x1b[106;5u":
 			// Shift+Enter，以及 Kitty 协议中的 Ctrl+J。
 			r.pending = append(r.pending[:0], readline.CharCtrlJ)
@@ -195,8 +204,23 @@ func NewInput(stdin io.Reader, stdout, stderr io.Writer, interactive bool) (*Inp
 		return nil, fmt.Errorf("interactive input requires a closable stdin")
 	}
 	multiline := &multilineEditing{column: -1, display: &inputDisplay{output: stdout}}
+	keys := newTerminalKeyReader(stdinCloser)
+	keys.scroll = func(direction int) bool {
+		if screen := multiline.display.screen; screen != nil {
+			screen.page(direction)
+			return true
+		}
+		return false
+	}
+	writeControl := func(content string) {
+		if multiline.display.screen != nil {
+			multiline.display.screen.writeControl(content)
+		} else {
+			_, _ = fmt.Fprint(stdout, content)
+		}
+	}
 	config := &readline.Config{
-		Stdin:        newTerminalKeyReader(stdinCloser),
+		Stdin:        keys,
 		Stdout:       stdout,
 		Stderr:       stderr,
 		HistoryLimit: 100,
@@ -221,7 +245,7 @@ func NewInput(stdin io.Reader, stdout, stderr io.Writer, interactive bool) (*Inp
 		defer modeMu.Unlock()
 		err := makeRaw()
 		if !extendedKeys {
-			_, _ = fmt.Fprint(stdout, enableExtendedKeys)
+			writeControl(enableExtendedKeys)
 			extendedKeys = true
 		}
 		return err
@@ -230,7 +254,7 @@ func NewInput(stdin io.Reader, stdout, stderr io.Writer, interactive bool) (*Inp
 		modeMu.Lock()
 		defer modeMu.Unlock()
 		if extendedKeys {
-			_, _ = fmt.Fprint(stdout, disableExtendedKeys)
+			writeControl(disableExtendedKeys)
 			extendedKeys = false
 		}
 		return exitRaw()
@@ -248,7 +272,11 @@ func (i *Input) Readline(prompt string) (string, error) {
 		i.multiline.display.prompt = prompt
 		i.lineEditor.SetPrompt(prompt)
 		line, err := i.lineEditor.ReadLine()
-		i.multiline.display.finish(i.multiline.line)
+		if screen := i.multiline.display.screen; screen != nil {
+			screen.finishInput(prompt, line, err == nil)
+		} else {
+			i.multiline.display.finish(i.multiline.line)
+		}
 		if errors.Is(err, readline.ErrInterrupt) {
 			return line, context.Canceled
 		}

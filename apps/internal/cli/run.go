@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -85,8 +86,21 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	interactive := IsTerminal(stdin) && IsTerminal(stdout)
+	if interactive {
+		restore, err := silenceTerminalEcho(stdin.(*os.File))
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
+			return 1
+		}
+		defer func() { _ = restore() }()
+	}
 	output := NewOutput(stdout, stderr, interactive)
-	defer output.StreamDone()
+	defer func() {
+		output.StreamDone()
+		if output.screen != nil {
+			output.screen.close()
+		}
+	}()
 	input, err := NewInput(stdin, stdout, stderr, interactive)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "minicode: "+err.Error())
@@ -112,8 +126,15 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	writer := stderr
 	if interactive {
 		writer = stdout
+		output.screen = newSessionScreen(stdout)
+		input.multiline.display.screen = output.screen
 	}
-	_, _ = fmt.Fprintln(writer, "[会话] "+session.ID())
+	output.write(writer, "[会话] "+session.ID()+"\n")
+	if interactive {
+		if initial := strings.Join(fs.Args(), " "); initial != "" {
+			output.screen.add("> "+initial, false)
+		}
+	}
 
 	// 位置参数作为第一轮输入，之后继续从终端编辑器或管道读取。
 	return session.Run(ctx, output, fs.Args(), *timeout, input)
