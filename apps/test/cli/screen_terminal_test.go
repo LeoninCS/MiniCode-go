@@ -154,6 +154,70 @@ func TestMiniCode_FullScreenInputStreamingAndResize(t *testing.T) {
 	terminal.exit(0)
 }
 
+func TestMiniCode_FullScreenMouseWheel(t *testing.T) {
+	requests := make(chan provider.ChatRequest, 4)
+	var content strings.Builder
+	content.WriteString("```text\n")
+	for n := range 45 {
+		fmt.Fprintf(&content, "wheel-line-%02d\n", n)
+	}
+	content.WriteString("wheel-tail\n```")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request provider.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		requests <- request
+		writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, content.String(), ""), FinishReason: "stop"}}})
+	}))
+	t.Cleanup(server.Close)
+	terminal := newSessionTerminal(t, server.URL, 80, 16)
+	terminal.expect(func(state terminalState) bool { return state.promptAtBottom("> ") && state.visible })
+	terminal.send("show history\r")
+	waitScreenRequest(t, requests)
+	terminal.expect(func(state terminalState) bool {
+		return state.promptAtBottom("> ") && state.visible && strings.Contains(state.text(), "wheel-tail")
+	})
+	terminal.send("中文draft")
+	terminal.expect(func(state terminalState) bool { return state.promptAtBottom("> 中文draft") })
+	for _, encoding := range []string{"SGR", "X10"} {
+		wheel := func(button int) string {
+			if encoding == "X10" {
+				// 大于 127 的坐标字节必须按 X10 事件消费，而不是作为 UTF-8 输入。
+				return string([]byte{'\x1b', '[', 'M', byte(button + 32), 192, 34})
+			}
+			return fmt.Sprintf("\x1b[<%d;160;2M", button)
+		}
+		terminal.send(strings.Repeat(wheel(64), 4))
+		terminal.expect(func(state terminalState) bool {
+			return state.promptAtBottom("> 中文draft") && !strings.Contains(state.text(), "wheel-tail") && strings.Contains(state.text(), "wheel-line-")
+		})
+		terminal.send(strings.Repeat(wheel(65), 4))
+		terminal.expect(func(state terminalState) bool {
+			return state.promptAtBottom("> 中文draft") && strings.Contains(state.text(), "wheel-tail")
+		})
+	}
+	// 分次到达的报告、修饰键、点击、释放和横向滚轮均不能改动草稿。
+	terminal.send("\x1b[<68;")
+	terminal.send("10;2M\x1b[<0;10;2M\x1b[<0;10;2m\x1b[<66;10;2M\x1b[<65;10;2m")
+	terminal.send(strings.Repeat("\x1b[<64;10;2M", 100))
+	terminal.expect(func(state terminalState) bool {
+		return state.promptAtBottom("> 中文draft") && strings.Contains(state.text(), "[会话]") && !strings.Contains(state.text(), "previous-shell-output")
+	})
+	terminal.send(strings.Repeat("\x1b[<65;10;2M", 100))
+	terminal.expect(func(state terminalState) bool {
+		return state.promptAtBottom("> 中文draft") && strings.Contains(state.text(), "wheel-tail")
+	})
+	terminal.send("\r")
+	request := waitScreenRequest(t, requests)
+	if got := request.Messages[len(request.Messages)-1].Text(); got != "中文draft" {
+		t.Fatalf("mouse events changed submitted input: %q", got)
+	}
+	terminal.expect(func(state terminalState) bool { return state.promptAtBottom("> ") && state.visible })
+	terminal.exit(0)
+}
+
 func TestMiniCode_FullScreenApprovalAndError(t *testing.T) {
 	requests := make(chan provider.ChatRequest, 4)
 	var calls atomic.Int32
@@ -360,9 +424,14 @@ func (terminal *sessionTerminal) exit(code int) {
 	if strings.Count(output, "\x1b[?1049h") != 1 || strings.Count(output, "\x1b[?1049l") != 1 {
 		terminal.t.Fatalf("session did not own one alternate screen: %q", output)
 	}
+	for _, mode := range []string{"1000", "1006"} {
+		if enabled, disabled := strings.Count(output, "\x1b[?"+mode+"h"), strings.Count(output, "\x1b[?"+mode+"l"); enabled == 0 || enabled != disabled {
+			terminal.t.Fatalf("mouse mode %s was not restored: enabled=%d disabled=%d", mode, enabled, disabled)
+		}
+	}
 	terminal.screen.Lock()
 	defer terminal.screen.Unlock()
-	if terminal.screen.Mode()&vt10x.ModeAltScreen != 0 || !terminal.screen.CursorVisible() {
-		terminal.t.Fatal("terminal screen or cursor was not restored")
+	if terminal.screen.Mode()&(vt10x.ModeAltScreen|vt10x.ModeMouseMask|vt10x.ModeMouseSgr) != 0 || !terminal.screen.CursorVisible() {
+		terminal.t.Fatal("terminal screen, mouse or cursor was not restored")
 	}
 }

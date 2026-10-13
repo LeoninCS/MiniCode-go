@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/ergochat/readline"
@@ -14,23 +16,29 @@ import (
 const (
 	// Kitty keyboard protocol 的“消除歧义”标志让支持它的终端为 Shift+Enter
 	// 发送带修饰键的 CSI-u 序列。不支持该协议的终端会安全忽略这两个控制序列。
-	enableExtendedKeys  = "\x1b[>1u"
-	disableExtendedKeys = "\x1b[<u"
+	enableExtendedKeys       = "\x1b[>1u"
+	disableExtendedKeys      = "\x1b[<u"
+	enableMouseTracking      = "\x1b[?1000h\x1b[?1006h"
+	disableMouseTracking     = "\x1b[?1006l\x1b[?1000l"
+	maxTerminalSequenceBytes = 64
+	wheelButtonUp            = 64
+	wheelButtonDown          = 65
+	mouseModifierMask        = 4 | 8 | 16
+	x10MouseOffset           = 32
 )
 
 type terminalKeyReader struct {
 	input   *bufio.Reader
 	closer  io.Closer
 	pending []byte
-	scroll  func(int) bool
+	scroll  func(direction int, page bool) bool
 }
 
 func newTerminalKeyReader(input io.ReadCloser) *terminalKeyReader {
 	return &terminalKeyReader{input: bufio.NewReader(input), closer: input}
 }
 
-// Read 将扩展键盘协议中的 Shift+Enter、Ctrl+J 和 Ctrl+C
-// 转换为 readline 能识别的控制字符。
+// Read 转换扩展键盘事件，并消费全屏会话的翻页、鼠标滚轮及点击事件。
 func (r *terminalKeyReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -53,7 +61,7 @@ func (r *terminalKeyReader) Read(p []byte) (int, error) {
 		}
 		r.pending = append(r.pending, second)
 		if second == '[' {
-			for len(r.pending) < 32 {
+			for len(r.pending) < maxTerminalSequenceBytes {
 				next, readErr := r.input.ReadByte()
 				if readErr != nil {
 					break
@@ -64,6 +72,16 @@ func (r *terminalKeyReader) Read(p []byte) (int, error) {
 				}
 			}
 		}
+		// 未支持 SGR 的终端可退回 X10 编码；CSI M 后的三个字节也是事件正文。
+		if string(r.pending) == "\x1b[M" {
+			var coordinates [3]byte
+			n, _ := io.ReadFull(r.input, coordinates[:])
+			r.pending = append(r.pending, coordinates[:n]...)
+		}
+		if direction, mouse := mouseScroll(r.pending); mouse && r.scroll != nil && r.scroll(direction, false) {
+			r.pending = r.pending[:0]
+			continue
+		}
 
 		switch string(r.pending) {
 		case "\x1b[5~", "\x1b[6~":
@@ -71,7 +89,7 @@ func (r *terminalKeyReader) Read(p []byte) (int, error) {
 			if string(r.pending) == "\x1b[6~" {
 				direction = -1
 			}
-			if r.scroll != nil && r.scroll(direction) {
+			if r.scroll != nil && r.scroll(direction, true) {
 				r.pending = r.pending[:0]
 			}
 		case "\x1b[13;2u", "\x1b[27;2;13~", "\x1b[13;2~", "\x1b[106;5u":
@@ -86,6 +104,48 @@ func (r *terminalKeyReader) Read(p []byte) (int, error) {
 	n := copy(p, r.pending)
 	r.pending = r.pending[n:]
 	return n, nil
+}
+
+// mouseScroll 解析 SGR/X10 鼠标事件；非滚轮事件也需消费，避免污染输入。
+func mouseScroll(sequence []byte) (direction int, mouse bool) {
+	button := 0
+	pressed := true
+	switch {
+	case len(sequence) == 6 && string(sequence[:3]) == "\x1b[M":
+		if sequence[3] < x10MouseOffset || sequence[4] <= x10MouseOffset || sequence[5] <= x10MouseOffset {
+			return 0, false
+		}
+		button = int(sequence[3]) - x10MouseOffset
+	case len(sequence) > 4 && string(sequence[:3]) == "\x1b[<":
+		final := sequence[len(sequence)-1]
+		if final != 'M' && final != 'm' {
+			return 0, false
+		}
+		fields := strings.Split(string(sequence[3:len(sequence)-1]), ";")
+		if len(fields) != 3 {
+			return 0, false
+		}
+		values := [3]int{}
+		for i, field := range fields {
+			value, err := strconv.Atoi(field)
+			if err != nil || value < 0 || i > 0 && value == 0 {
+				return 0, false
+			}
+			values[i] = value
+		}
+		button, pressed = values[0], final == 'M'
+	default:
+		return 0, false
+	}
+	if pressed {
+		switch button &^ mouseModifierMask {
+		case wheelButtonUp:
+			return 1, true
+		case wheelButtonDown:
+			return -1, true
+		}
+	}
+	return 0, true
 }
 
 func (r *terminalKeyReader) Close() error {
@@ -205,9 +265,11 @@ func NewInput(stdin io.Reader, stdout, stderr io.Writer, interactive bool) (*Inp
 	}
 	multiline := &multilineEditing{column: -1, display: &inputDisplay{output: stdout}}
 	keys := newTerminalKeyReader(stdinCloser)
-	keys.scroll = func(direction int) bool {
+	keys.scroll = func(direction int, page bool) bool {
 		if screen := multiline.display.screen; screen != nil {
-			screen.page(direction)
+			if direction != 0 {
+				screen.scrollBy(direction, page)
+			}
 			return true
 		}
 		return false
@@ -245,6 +307,9 @@ func NewInput(stdin io.Reader, stdout, stderr io.Writer, interactive bool) (*Inp
 		defer modeMu.Unlock()
 		err := makeRaw()
 		if !extendedKeys {
+			if multiline.display.screen != nil {
+				writeControl(enableMouseTracking)
+			}
 			writeControl(enableExtendedKeys)
 			extendedKeys = true
 		}
@@ -254,6 +319,9 @@ func NewInput(stdin io.Reader, stdout, stderr io.Writer, interactive bool) (*Inp
 		modeMu.Lock()
 		defer modeMu.Unlock()
 		if extendedKeys {
+			if multiline.display.screen != nil {
+				writeControl(disableMouseTracking)
+			}
 			writeControl(disableExtendedKeys)
 			extendedKeys = false
 		}

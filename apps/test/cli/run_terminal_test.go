@@ -168,7 +168,7 @@ func TestMiniCode_TerminalCtrlC(t *testing.T) {
 			for chunk := range chunks {
 				output.WriteString(chunk)
 			}
-			for _, pair := range [][2]string{{"\x1b[>1u", "\x1b[<u"}, {"\x1b[?1049h", "\x1b[?1049l"}} {
+			for _, pair := range [][2]string{{"\x1b[>1u", "\x1b[<u"}, {"\x1b[?1049h", "\x1b[?1049l"}, {"\x1b[?1000h", "\x1b[?1000l"}, {"\x1b[?1006h", "\x1b[?1006l"}} {
 				if strings.Count(output.String(), pair[0]) != strings.Count(output.String(), pair[1]) {
 					t.Fatalf("terminal state not restored after exit: %q", output.String())
 				}

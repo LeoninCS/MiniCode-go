@@ -11,7 +11,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-const maxInputRows = 6
+const (
+	maxInputRows    = 6
+	wheelScrollRows = 3
+)
 
 // screenEntry 保留本次运行的显示内容，窗口变化时重新排版。
 type screenEntry struct {
@@ -126,11 +129,20 @@ func (s *sessionScreen) writeControl(content string) {
 	}
 }
 
-func (s *sessionScreen) page(direction int) {
+func (s *sessionScreen) scrollBy(direction int, page bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, height := outputSize(s.stdout)
-	s.scroll = max(0, s.scroll+direction*max(1, height-3))
+	if s.closed {
+		return
+	}
+	step := wheelScrollRows
+	if page {
+		width, height := outputSize(s.stdout)
+		rows := layoutInput([]rune(s.input), screenInputPrompt(s.prompt, max(1, width-1)), width)
+		inputHeight := min(len(rows), max(1, min(maxInputRows, height/3)))
+		step = max(1, height-inputHeight-2)
+	}
+	s.scroll = max(0, s.scroll+direction*step)
 	s.dirty = true
 	s.notify()
 }
