@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/MiniCode-go/minicode/internal/provider"
+	"github.com/MiniCode-go/minicode/internal/token"
 )
 
 const (
@@ -59,28 +60,15 @@ func estimateRequest(req provider.ChatRequest) int {
 	}
 	if len(req.Tools) > 0 {
 		data, _ := json.Marshal(req.Tools)
-		tokens += estimateText(string(data))
+		tokens += token.EstimateText(string(data))
 	}
 	return tokens
 }
 
 func estimateMessage(message provider.Message) int {
-	tokens := 4 + estimateText(string(message.Role)) + estimateText(message.Text()) + estimateText(message.ToolCallID)
+	tokens := 4 + token.EstimateText(string(message.Role)) + token.EstimateText(message.Text()) + token.EstimateText(message.ToolCallID)
 	for _, call := range message.ToolCalls {
-		tokens += 4 + estimateText(call.ID) + estimateText(string(call.Type)) + estimateText(call.Function.Name) + estimateText(call.Function.Arguments)
+		tokens += 4 + token.EstimateText(call.ID) + token.EstimateText(string(call.Type)) + token.EstimateText(call.Function.Name) + token.EstimateText(call.Function.Arguments)
 	}
 	return tokens
-}
-
-// estimateText 按每四个 ASCII 字符、每个非 ASCII 字符约两个 token 粗估。
-func estimateText(text string) int {
-	ascii, other := 0, 0
-	for _, r := range text {
-		if r <= 127 {
-			ascii++
-		} else {
-			other++
-		}
-	}
-	return (ascii+3)/4 + other*2
 }
