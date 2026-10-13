@@ -86,3 +86,63 @@ func TestProjectMemory_EditValidatesWholeCandidateAndDeletesEntries(t *testing.T
 	}
 	assertFile(t, workspace, memory.FileName, "")
 }
+
+func TestDetailMemory_SizeAndResidentBudget(t *testing.T) {
+	files, workspace := newFileTools(t)
+	ctx := context.Background()
+	path := memory.DetailDir + "/session.md"
+	// 按需正文可以超过常驻预算，仍限制为完整的 64 KiB 文本。
+	content := strings.Repeat("a", memory.DefaultTokenBudget*4+1)
+	if _, err := files.WriteFile(ctx, path, content); err != nil {
+		t.Fatalf("detail inherited resident budget: %v", err)
+	}
+	if got, err := files.ReadFile(ctx, path, 0, 0); err != nil || !strings.Contains(got, content) {
+		t.Fatalf("read detail = %q, %v", got, err)
+	}
+	if _, err := files.WriteFile(ctx, "./"+path, strings.Repeat("b", memory.MaxFileBytes+1)); err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("oversized detail write = %v", err)
+	}
+	assertFile(t, workspace, path, content)
+	if _, err := files.EditFile(ctx, path, content, strings.Repeat("b", memory.MaxFileBytes+1), false); err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("oversized detail edit = %v", err)
+	}
+	assertFile(t, workspace, path, content)
+	if _, err := files.EditFile(ctx, path, content, "", false); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, workspace, path, "")
+	// 相邻普通目录不受记忆文件的 64 KiB 上限影响。
+	ordinary := ".minicode/memory-other/session.md"
+	if _, err := files.WriteFile(ctx, ordinary, strings.Repeat("c", memory.MaxFileBytes+1)); err != nil {
+		t.Fatalf("detail policy affected ordinary file: %v", err)
+	}
+}
+
+func TestDetailMemory_InvalidContentDoesNotChangeDiskOrReachReadOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		message string
+	}{
+		{name: "UTF-8", content: "\xff", message: "UTF-8"},
+		{name: "NUL", content: "a\x00b", message: "UTF-8"},
+		{name: "size", content: strings.Repeat("a", memory.MaxFileBytes+1), message: "byte limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files, workspace := newFileTools(t)
+			path := memory.DetailDir + "/topic.md"
+			if _, err := files.WriteFile(context.Background(), path, "preserved detail"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := files.WriteFile(context.Background(), path, tc.content); err == nil || !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("invalid detail accepted: %v", err)
+			}
+			assertFile(t, workspace, path, "preserved detail")
+			// 外部写入的损坏详情只在显式 read 时返回工具错误。
+			putFile(t, workspace, path, tc.content)
+			if output, err := files.ReadFile(context.Background(), path, 0, 0); err == nil || output != "" || !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("invalid detail read = %q, %v", output, err)
+			}
+		})
+	}
+}

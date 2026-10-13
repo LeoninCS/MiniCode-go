@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/MiniCode-go/minicode/internal/config"
+	"github.com/MiniCode-go/minicode/internal/memory"
 	"github.com/MiniCode-go/minicode/internal/provider"
 )
 
@@ -137,6 +139,130 @@ func TestMiniCode_ConfigErrors(t *testing.T) {
 	}
 }
 
+func TestConfig_WorkspacePathAndLegacyFallback(t *testing.T) {
+	valid := "[model]\napi_key = 'test-key'\nbase_url = 'http://127.0.0.1'\nname = 'workspace-model'\n"
+	legacy := strings.Replace(valid, "workspace-model", "legacy-model", 1)
+	for _, tc := range []struct {
+		name      string
+		primary   string
+		legacy    string
+		directory bool
+		symlink   bool
+		wantModel string
+		wantError string
+	}{
+		{name: "workspace config", primary: valid, wantModel: "workspace-model"},
+		{name: "legacy config", legacy: legacy, wantModel: "legacy-model"},
+		{name: "workspace config wins", primary: valid, legacy: legacy, wantModel: "workspace-model"},
+		{name: "invalid primary does not fall back", primary: "[model]\napi_key = \"do-not-print-this-secret\n", legacy: legacy, wantError: "cannot parse " + config.FilePath},
+		{name: "missing field does not fall back", primary: "[model]\n", legacy: legacy, wantError: "missing required config"},
+		{name: "directory does not fall back", directory: true, legacy: legacy, wantError: "read config"},
+		{name: "broken link does not fall back", symlink: true, legacy: legacy, wantError: "read config"},
+		{name: "both missing", wantError: "read config"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			t.Chdir(workspace)
+			if tc.primary != "" {
+				writeConfigAtPath(t, workspace, config.FilePath, tc.primary)
+			} else if tc.directory || tc.symlink {
+				path := filepath.Join(workspace, config.FilePath)
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if tc.directory {
+					if err := os.Mkdir(path, 0700); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.Symlink("missing.toml", path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.legacy != "" {
+				writeConfigFile(t, workspace, tc.legacy)
+			}
+			cfg, err := config.Load()
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) || strings.Contains(err.Error(), "do-not-print-this-secret") {
+					t.Fatalf("Load error = %v, want %q without secret", err, tc.wantError)
+				}
+			} else if err != nil || cfg.Model.Name != tc.wantModel {
+				t.Fatalf("Load model = %q, error = %v, want %q", cfg.Model.Name, err, tc.wantModel)
+			}
+		})
+	}
+}
+
+func TestMiniCode_AppsWorkspaceLoadsMemoryAndDetails(t *testing.T) {
+	binary := buildMiniCode(t)
+	repository := t.TempDir()
+	workspace := filepath.Join(repository, "apps")
+	path := memory.DetailDir + "/topic.md"
+	index := "MODULE_RESIDENT_MEMORY\n- [专题](" + path + ")：分析模块时参考。\n"
+	for file, content := range map[string]string{
+		filepath.Join(repository, memory.FileName): "PARENT_RESIDENT_MEMORY",
+		filepath.Join(repository, path):            "PARENT_DETAIL_MEMORY",
+		filepath.Join(workspace, memory.FileName):  index,
+		filepath.Join(workspace, path):             "MODULE_DETAIL_MEMORY",
+	} {
+		if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req provider.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		for _, message := range req.Messages {
+			if strings.Contains(message.Text(), "PARENT_RESIDENT_MEMORY") || strings.Contains(message.Text(), "PARENT_DETAIL_MEMORY") {
+				t.Error("apps workspace read memory from its parent directory")
+			}
+		}
+		if len(req.Messages) < 3 || req.Messages[0].Role != provider.RoleSystem || !strings.Contains(req.Messages[0].Text(), workspace) || req.Messages[1].Role != provider.RoleUser || !strings.Contains(req.Messages[1].Text(), "\n<project-memory>\n"+index+"\n</project-memory>") {
+			t.Error("module memory or workspace was not injected correctly")
+		}
+		switch calls.Add(1) {
+		case 1:
+			for _, message := range req.Messages {
+				if strings.Contains(message.Text(), "MODULE_DETAIL_MEMORY") {
+					t.Error("detail was loaded before the model requested it")
+				}
+			}
+			arguments, _ := json.Marshal(map[string]string{"path": path})
+			call := provider.ToolCall{ID: "read-module-detail", Type: provider.ToolTypeFunction, Function: provider.FunctionCall{Name: "read", Arguments: string(arguments)}}
+			writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{call}}, FinishReason: "tool_calls"}}})
+		case 2:
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role != provider.RoleTool || last.ToolCallID != "read-module-detail" || !strings.Contains(last.Text(), "MODULE_DETAIL_MEMORY") {
+				t.Error("detail was not read relative to the apps workspace")
+			}
+			writeStreamResponse(w, provider.ChatResponse{Choices: []provider.Choice{{Message: provider.NewMessage(provider.RoleAssistant, "module memory loaded", ""), FinishReason: "stop"}}})
+		default:
+			t.Error("unexpected model request")
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	writeConfigAtPath(t, workspace, config.FilePath, fmt.Sprintf("[model]\napi_key = 'test-key'\nbase_url = %q\nname = 'module-model'\n", srv.URL))
+	cmd := exec.Command(binary, "分析模块")
+	cmd.Dir = workspace
+	cmd.Stdin = strings.NewReader("/exit\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "module memory loaded") || calls.Load() != 2 {
+		t.Fatalf("apps startup = %v, calls=%d output=%q", err, calls.Load(), output)
+	}
+	if entries, err := os.ReadDir(filepath.Join(workspace, ".minicode", "sessions")); err != nil || len(entries) != 1 {
+		t.Fatalf("apps session files=%v, error=%v", entries, err)
+	}
+}
+
 // legacyConfigEnv 故意设置旧配置，验证它们不会覆盖 TOML 或成为回退来源。
 func legacyConfigEnv() []string {
 	return []string{
@@ -152,11 +278,16 @@ func writeModelConfig(t *testing.T, dir, baseURL string) {
 
 func writeConfigFile(t *testing.T, dir, content string) {
 	t.Helper()
-	configDir := filepath.Join(dir, "apps", "config")
-	if err := os.MkdirAll(configDir, 0700); err != nil {
+	writeConfigAtPath(t, dir, "apps/config/config.toml", content)
+}
+
+func writeConfigAtPath(t *testing.T, dir, path, content string) {
+	t.Helper()
+	file := filepath.Join(dir, path)
+	if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(content), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 }

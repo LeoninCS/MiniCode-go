@@ -1,4 +1,6 @@
 /apps/config/config.toml
+/config/config.toml
 /bin/
 /.minicode/
+/apps/.minicode/
 *.session.json

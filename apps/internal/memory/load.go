@@ -90,18 +90,26 @@ func NewDocument(content string, tokenBudget int) (*Document, error) {
 	if tokenBudget < 0 {
 		return nil, errors.New("memory: token budget must not be negative")
 	}
-	if len(content) > MaxFileBytes {
-		return nil, fmt.Errorf("memory: %s exceeds %d byte limit", FileName, MaxFileBytes)
-	}
-	if !utf8.ValidString(content) {
-		return nil, fmt.Errorf("memory: %s must contain valid UTF-8 text", FileName)
-	}
-	if strings.IndexByte(content, 0) >= 0 {
-		return nil, fmt.Errorf("memory: %s must not contain NUL bytes", FileName)
+	if err := validateContent(FileName, content); err != nil {
+		return nil, err
 	}
 	estimated := token.EstimateText(content)
 	if estimated > tokenBudget {
 		return nil, fmt.Errorf("memory: %s requires approximately %d tokens, exceeds %d token budget", FileName, estimated, tokenBudget)
 	}
 	return &Document{Content: content, EstimatedTokens: estimated}, nil
+}
+
+// validateContent 校验完整记忆文件，常驻正文与按需详情共用文本和大小限制。
+func validateContent(name, content string) error {
+	if len(content) > MaxFileBytes {
+		return fmt.Errorf("memory: %s exceeds %d byte limit", name, MaxFileBytes)
+	}
+	if !utf8.ValidString(content) {
+		return fmt.Errorf("memory: %s must contain valid UTF-8 text", name)
+	}
+	if strings.IndexByte(content, 0) >= 0 {
+		return fmt.Errorf("memory: %s must not contain NUL bytes", name)
+	}
+	return nil
 }

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	projectMemoryPrefix = "以下是当前工作区 MiniCode.md 中的项目记忆，作为项目背景和长期约定使用。若与系统规则或用户本次明确要求冲突，以系统规则和用户本次要求为准。\n<project-memory>\n"
+	projectMemoryPrefix = "以下是当前工作区 MiniCode.md 中的常驻项目记忆与按需详情目录，作为项目背景和长期约定使用。目录链接相对于工作区，仅在任务相关时用 read 读取详情，未读取的详情正文不在此消息中。若与系统规则或用户本次明确要求冲突，以系统规则和用户本次要求为准。\n<project-memory>\n"
 	projectMemorySuffix = "\n</project-memory>"
 )
 

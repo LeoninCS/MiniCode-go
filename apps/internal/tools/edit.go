@@ -65,10 +65,8 @@ func (f *FileTools) EditFile(ctx context.Context, path, oldText, newText string,
 	if err := validateText(updated); err != nil {
 		return "", fmt.Errorf("edit: %w", err)
 	}
-	if path == memory.FileName {
-		if _, err := memory.NewDocument(string(updated), memory.DefaultTokenBudget); err != nil {
-			return "", fmt.Errorf("edit: %w", err)
-		}
+	if err := memory.ValidateFile(path, string(updated)); err != nil {
+		return "", fmt.Errorf("edit: %w", err)
 	}
 	if err := fsWriteFile(ctx, f.root, path, updated, &version); err != nil {
 		return "", fmt.Errorf("edit: %w", err)

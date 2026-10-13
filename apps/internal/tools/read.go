@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/MiniCode-go/minicode/internal/memory"
 	"github.com/MiniCode-go/minicode/internal/provider"
 )
 
@@ -30,6 +31,11 @@ func (f *FileTools) ReadFile(ctx context.Context, path string, offset, limit int
 	content, err := fsReadFile(ctx, f.root, path)
 	if err != nil {
 		return "", fmt.Errorf("read: %w", err)
+	}
+	if memory.IsDetailPath(path) {
+		if err := memory.ValidateFile(path, string(content)); err != nil {
+			return "", fmt.Errorf("read: %w", err)
+		}
 	}
 	if len(content) == 0 {
 		if offset != 1 {

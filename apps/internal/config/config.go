@@ -3,6 +3,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,8 +11,11 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// FilePath 是模型和 Langfuse 配置的唯一文件路径。
-const FilePath = "apps/config/config.toml"
+const (
+	// FilePath 是相对当前工作区的首选配置路径。
+	FilePath       = "config/config.toml"
+	legacyFilePath = "apps/config/config.toml"
+)
 
 // Config 包含模型服务和可选的 Langfuse 配置。
 type Config struct {
@@ -28,17 +32,25 @@ type Config struct {
 	} `toml:"langfuse"`
 }
 
-// Load 从固定路径读取模型和 Langfuse 配置。
+// Load 从当前工作区读取配置，仅首选文件不存在时兼容旧目录布局。
 func Load() (Config, error) {
 	var cfg Config
-	data, err := os.ReadFile(FilePath)
+	path := FilePath
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// 已存在的断链也属于读取错误，不能被旧配置掩盖。
+		if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
+			path = legacyFilePath
+			data, err = os.ReadFile(path)
+		}
+	}
 	if err != nil {
 		return cfg, fmt.Errorf("read config: %w", err)
 	}
 	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
 		// 解析错误可能包含密钥所在的原始行，不直接输出错误内容。
-		return cfg, fmt.Errorf("cannot parse %s; check TOML syntax, field names and types", FilePath)
+		return cfg, fmt.Errorf("cannot parse %s; check TOML syntax, field names and types", path)
 	}
 	var missing []string
 	if strings.TrimSpace(cfg.Model.APIKey) == "" {
