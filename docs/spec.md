@@ -437,9 +437,9 @@ CLI 需要让用户能够观察 Agent 当前行为，包括：
 
 #### 验证与范围
 
-常驻约定、简短目录和按需详情已接入，本地建立代码组织、会话与上下文压缩、项目记忆、终端交互四个专题。宿主不自动划分内容或建立索引库；目录选择、语义去重和同步依赖模型提示。pi 参考及剩余验收见 [Day 15 开发计划](plan.md)。
+常驻约定、简短目录和按需详情已接入，本地建立代码组织、会话与上下文压缩、项目记忆、终端交互四个专题。宿主不自动划分内容或建立索引库；目录选择、语义去重和同步依赖模型提示。pi 参考及阶段收尾记录见 [Day 15 开发计划](plan.md)。
 
-实现位于 `apps/internal/memory/load.go`、`files.go`、`apps/internal/token/estimate.go`、`apps/internal/agent/memory.go`、`prompt.go` 和现有 Session、压缩、文件工具及配置接入点。测试覆盖常驻与详情校验、未读正文不注入、按需读取、压缩后重读、专题与目录维护、apps 启动、配置优先级与错误不回退；全量 race 测试、`go vet` 和编译通过。Fake Provider 验证宿主流程，真实模型的专题选择、去重、冲突更新及删除行为仍待验收。
+实现位于 `apps/internal/memory/load.go`、`files.go`、`apps/internal/token/estimate.go`、`apps/internal/agent/memory.go`、`prompt.go` 和现有 Session、压缩、文件工具及配置接入点。测试覆盖常驻与详情校验、未读正文不注入、按需读取、压缩后重读、专题与目录维护、apps 启动、配置优先级与错误不回退；2026-10-13 全量 race 测试、`go vet` 和编译通过。Fake Provider 验证宿主流程。2026-10-18 按用户决定跳过真实模型的专题选择、去重、冲突更新及删除行为验收，Day 15 以“功能已实现，真实模型验收跳过”收尾；跳过项未执行，不记为验收通过。
 
 ## 5. 设计边界
 

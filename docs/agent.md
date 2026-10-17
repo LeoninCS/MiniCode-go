@@ -215,7 +215,7 @@ apps/                                # Go module 根与本项目完整运行工�
 - **验证状态**：本地回归、全量 race 测试与 `go vet` 已通过；2026-10-13 使用配置模型 `gpt-5.6-sol` 完成三轮连续压缩，分别通过 8、7、8 项事实验收，三个语义负例均被正确拒绝，验收耗时 54.46 秒，Day 14 已完成。请求未显式设置思考强度。固定场景通过不等于任意摘要都能完整保留事实，真实任务仍应按需重读文件。
 - **源码与测试**：`apps/internal/provider/messages.go`、`apps/internal/agent/compact.go`、`stream.go`、`apps/internal/compaction/compact.go`，以及 `apps/test/provider/messages_test.go`、`apps/test/compaction/semantic_test.go`、`semantic_live_test.go` 和现有 Agent、Session 回归。
 
-### Day 15 项目长期记忆（2026-10-13）
+### Day 15 项目长期记忆（2026-10-18 收尾）
 
 - **文件来源**：读取工作区根目录的 `MiniCode.md`，不扫描父目录、子目录或全局文件。本项目入口为 `apps/MiniCode.md`，运行工作区为 `apps/`；记忆加载器保持通用，不硬编码 apps。仅文件名确实不存在时按无记忆处理，不自动创建；已有空文件不注入。不使用 `.minicode/memory.json`、条目 ID 或新存储框架。
 - **内容校验**：`memory.Load` 负责工作区、普通文件和有界读取，`memory.NewDocument` 共用 UTF-8、NUL、64 KiB 大小及 4,096 token 原文预算检查。超限或格式错误返回失败，不截断；`internal/token.EstimateText` 提供共享粗估，消息包装另计入整体预算。
@@ -228,8 +228,8 @@ apps/                                # Go module 根与本项目完整运行工�
 - **写后刷新**：成功的根目录 `write` / `edit` 标记需要刷新，整批工具结果完整配对后重新读取，再发送下一次请求。拒绝或失败不触发刷新；刷新失败保留已完成的工具历史并返回错误。没有为 shell 修改、符号链接别名或其他间接路径新增检测，下个用户轮次仍会重新加载。
 - **删除范围**：删除指定内容使用 `edit` 空替换；清空全部记忆先清空目录列出的详情，再清空根目录文件，留下空文件。原始对话、工具结果及旧摘要可以继续包含历史内容，不把清空记忆解释为清除会话存档。
 - **工作区与本地数据**：四个专题已放入 `apps/.minicode/memory/`，根目录与 apps 下的 `.minicode/` 均被 Git 忽略。记忆迁移不搬迁旧 Session，也不自动切换工作区；从 apps 启动只读该目录内记忆与存档。
-- **范围**：按用户约定不提供 `/memory`、`/forget`，记忆查询和维护统一走普通对话与现有工具。没有自动扫描、关键词或向量索引；Day 15 核心流程已接入，仍待真实模型验收。
-- **验证**：`apps/test/memory/load_test.go`、`files_test.go`、`apps/test/agent/memory_test.go`、`memory_mutation_test.go`、`memory_detail_test.go`、`apps/test/tools/memory_test.go` 和 `apps/test/cli/config_test.go` 覆盖常驻/详情校验、按需读取、维护、压缩恢复、apps 启动及配置优先级与错误不回退；全量 race 测试、`go vet` 和编译通过。Fake Provider 验证宿主流程，真实模型的专题选择、去重、冲突更新和删除仍待验证。
+- **范围**：按用户约定不提供 `/memory`、`/forget`，记忆查询和维护统一走普通对话与现有工具。没有自动扫描、关键词或向量索引；Day 15 功能已实现，真实模型验收按用户决定跳过，阶段已完成。
+- **验证**：`apps/test/memory/load_test.go`、`files_test.go`、`apps/test/agent/memory_test.go`、`memory_mutation_test.go`、`memory_detail_test.go`、`apps/test/tools/memory_test.go` 和 `apps/test/cli/config_test.go` 覆盖常驻/详情校验、按需读取、维护、压缩恢复、apps 启动及配置优先级与错误不回退；2026-10-13 全量 race 测试、`go vet` 和编译通过。Fake Provider 验证宿主流程。2026-10-18 用户决定跳过真实模型的专题选择、去重、冲突更新和删除验收；跳过项未执行，不记为验收通过。
 
 ## 6. 已知陷阱
 
